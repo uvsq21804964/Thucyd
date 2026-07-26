@@ -1,0 +1,268 @@
+import json
+import secrets
+import time
+from typing import Any, Literal
+from uuid import UUID, uuid4
+
+from fastapi import APIRouter, Cookie, Depends, Header, HTTPException
+from fastapi.responses import StreamingResponse
+from starlette.concurrency import run_in_threadpool
+from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import select
+
+from app.database import SessionLocal, session_scope
+from app.interviews.turn_engine import process_turn
+from app.interviews.models import InterviewSessionModel, InterviewTurnModel
+from app.interviews.tavus import (
+    TavusAPIError,
+    create_tavus_conversation,
+    end_tavus_conversation,
+)
+from app.interviews.tokens import create_session_token, extract_session_claims, tavus_context
+from app.oauth2 import AuthJWT
+from app.routes.GestionAudit import _authorized_audit
+from app.settings import settings
+
+router = APIRouter()
+
+
+class ChatMessage(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    role: Literal["system", "user", "assistant", "tool"]
+    content: Any
+
+    def text_content(self) -> str:
+        if isinstance(self.content, str):
+            return self.content
+        if isinstance(self.content, list):
+            parts = []
+            for item in self.content:
+                if isinstance(item, dict) and isinstance(item.get("text"), str):
+                    parts.append(item["text"])
+            return " ".join(parts)
+        return str(self.content or "")
+
+
+class ChatCompletionRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    model: str = "ornisec-interviewer"
+    messages: list[ChatMessage] = Field(min_length=1, max_length=200)
+    stream: bool = True
+
+
+def _authenticate_tavus(authorization: str | None):
+    expected = settings.TAVUS_LLM_API_KEY
+    if not expected:
+        raise HTTPException(status_code=503, detail="Passerelle Tavus non configurée")
+    scheme, _, supplied = (authorization or "").partition(" ")
+    if scheme.lower() != "bearer" or not secrets.compare_digest(supplied, expected):
+        raise HTTPException(status_code=401, detail="Clé de passerelle invalide")
+
+
+def _chunk(identifier: str, model: str, content: str | None, finish_reason=None):
+    delta = {"content": content} if content is not None else {}
+    return {
+        "id": identifier,
+        "object": "chat.completion.chunk",
+        "created": int(time.time()),
+        "model": model,
+        "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
+    }
+
+
+async def _stream_response(text: str, model: str):
+    identifier = f"chatcmpl-{uuid4().hex}"
+    yield f"data: {json.dumps(_chunk(identifier, model, None), ensure_ascii=False)}\n\n"
+    words = text.split(" ")
+    for index, word in enumerate(words):
+        content = word if index == len(words) - 1 else f"{word} "
+        yield f"data: {json.dumps(_chunk(identifier, model, content), ensure_ascii=False)}\n\n"
+    yield f"data: {json.dumps(_chunk(identifier, model, None, 'stop'), ensure_ascii=False)}\n\n"
+    yield "data: [DONE]\n\n"
+
+
+@router.post("/interviews/{audit_id}/sessions")
+async def create_interview_session(
+    audit_id: str,
+    Authorize: AuthJWT = Depends(),
+    access_token: str = Cookie(None),
+):
+    audit, _, _ = _authorized_audit(audit_id, Authorize, access_token)
+    references = [int(question["ref"]) for question in audit.fiche]
+    if not references:
+        raise HTTPException(status_code=409, detail="Le questionnaire est vide")
+    if not settings.TAVUS_API_KEY:
+        raise HTTPException(status_code=503, detail="TAVUS_API_KEY n'est pas configurée")
+    if not settings.TAVUS_PERSONA_ID:
+        raise HTTPException(status_code=503, detail="TAVUS_PERSONA_ID n'est pas configuré")
+
+    parsed_audit_id = UUID(audit_id)
+    session_id = uuid4()
+    custom_greeting = str(audit.fiche[0]["question"]).strip()
+    token = create_session_token(session_id, parsed_audit_id)
+    conversational_context = tavus_context(token)
+
+    with session_scope() as database:
+        database.add(
+            InterviewSessionModel(
+                id=session_id,
+                audit_id=parsed_audit_id,
+                question_refs=references,
+                status="creating",
+                followups={"tavus": {"status": "creating"}},
+            )
+        )
+
+    try:
+        tavus = await run_in_threadpool(
+            create_tavus_conversation,
+            conversation_name=f"Audit ORNISEC - {audit.company_name}"[:120],
+            conversational_context=conversational_context,
+            custom_greeting=custom_greeting,
+        )
+    except TavusAPIError as exc:
+        with session_scope() as database:
+            interview = database.get(InterviewSessionModel, session_id)
+            if interview is not None:
+                state = dict(interview.followups or {})
+                state["tavus"] = {"status": "failed", "error": exc.detail}
+                interview.followups = state
+                interview.status = "provider_error"
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+    tavus_state = {
+        "conversation_id": tavus.conversation_id,
+        "conversation_url": str(tavus.conversation_url),
+        "meeting_token": tavus.meeting_token,
+        "status": tavus.status,
+    }
+    with session_scope() as database:
+        interview = database.get(InterviewSessionModel, session_id)
+        if interview is None:
+            raise HTTPException(status_code=500, detail="Session d'entretien introuvable après sa création")
+        state = dict(interview.followups or {})
+        state["tavus"] = tavus_state
+        interview.followups = state
+        interview.status = "active"
+
+    return {
+        "session_id": str(session_id),
+        "audit_id": audit_id,
+        "status": "active",
+        "custom_greeting": custom_greeting,
+        "conversational_context": conversational_context,
+        "tavus": tavus_state,
+    }
+
+@router.get("/interviews/{session_id}")
+async def get_interview_session(
+    session_id: str,
+    Authorize: AuthJWT = Depends(),
+    access_token: str = Cookie(None),
+):
+    parsed_session_id = UUID(session_id)
+    with SessionLocal() as database:
+        interview = database.get(InterviewSessionModel, parsed_session_id)
+        if interview is None:
+            raise HTTPException(status_code=404, detail="Session d'entretien introuvable")
+        _authorized_audit(str(interview.audit_id), Authorize, access_token)
+        turns = database.scalars(
+            select(InterviewTurnModel)
+            .where(InterviewTurnModel.session_id == parsed_session_id)
+            .order_by(InterviewTurnModel.turn_index)
+        ).all()
+        return {
+            "session_id": session_id,
+            "audit_id": str(interview.audit_id),
+            "status": interview.status,
+            "current_index": interview.current_index,
+            "total_questions": len(interview.question_refs),
+            "tavus": dict(interview.followups or {}).get("tavus"),
+            "turns": [
+                {
+                    "question_ref": turn.question_ref,
+                    "transcript": turn.transcript,
+                    "assistant_text": turn.assistant_text,
+                    "decision": turn.decision,
+                    "created_at": turn.created_at,
+                }
+                for turn in turns
+            ],
+        }
+
+
+@router.post("/interviews/{session_id}/end")
+async def end_interview_session(
+    session_id: str,
+    Authorize: AuthJWT = Depends(),
+    access_token: str = Cookie(None),
+):
+    try:
+        parsed_session_id = UUID(session_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Identifiant de session invalide") from exc
+
+    with SessionLocal() as database:
+        interview = database.get(InterviewSessionModel, parsed_session_id)
+        if interview is None:
+            raise HTTPException(status_code=404, detail="Session d'entretien introuvable")
+        _authorized_audit(str(interview.audit_id), Authorize, access_token)
+        tavus_state = dict(interview.followups or {}).get("tavus") or {}
+        conversation_id = tavus_state.get("conversation_id")
+        already_ended = tavus_state.get("status") == "ended"
+
+    if not conversation_id:
+        raise HTTPException(status_code=409, detail="Conversation Tavus introuvable")
+    if not already_ended:
+        try:
+            await run_in_threadpool(end_tavus_conversation, conversation_id)
+        except TavusAPIError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+    with session_scope() as database:
+        interview = database.scalar(
+            select(InterviewSessionModel)
+            .where(InterviewSessionModel.id == parsed_session_id)
+            .with_for_update()
+        )
+        if interview is None:
+            raise HTTPException(status_code=404, detail="Session d'entretien introuvable")
+        state = dict(interview.followups or {})
+        tavus_state = dict(state.get("tavus") or {})
+        tavus_state["status"] = "ended"
+        state["tavus"] = tavus_state
+        interview.followups = state
+        if interview.status != "completed":
+            interview.status = "ended"
+
+    return {"session_id": session_id, "status": interview.status, "tavus": tavus_state}
+
+@router.post("/v1/chat/completions")
+async def tavus_chat_completions(
+    payload: ChatCompletionRequest,
+    authorization: str | None = Header(default=None),
+):
+    _authenticate_tavus(authorization)
+    session_id, audit_id = extract_session_claims(payload.messages)
+    assistant_text = await run_in_threadpool(process_turn, session_id, audit_id, payload.messages)
+
+    if payload.stream:
+        return StreamingResponse(
+            _stream_response(assistant_text, payload.model),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    return {
+        "id": f"chatcmpl-{uuid4().hex}",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": payload.model,
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": assistant_text},
+            "finish_reason": "stop",
+        }],
+    }

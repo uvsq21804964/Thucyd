@@ -1,0 +1,78 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body,
+:root {
+  min-height: 100%;
+  --background: #f1f5f9;
+  --button: #6d28d9;
+  --sidebar: #020617;
+  --orange: #7c3aed;
+  --button-sidebar: #f8fafc;
+  --text1: #ffffff;
+  --text2: #0f172a;
+}
+
+@layer base {
+  :root {
+    --primary: 262 83% 58%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 210 40% 96.1%;
+    --secondary-foreground: 222.2 47.4% 11.2%;
+    --muted: 210 40% 96.1%;
+    --muted-foreground: 215.4 16.3% 46.9%;
+    --accent: 210 40% 96.1%;
+    --accent-foreground: 222.2 47.4% 11.2%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 214.3 31.8% 91.4%;
+    --input: 214.3 31.8% 91.4%;
+    --ring: 262 83% 58%;
+    --card: 0 0% 100%;
+    --card-foreground: 222.2 47.4% 11.2%;
+    --radius: 0.75rem;
+  }
+
+  * {
+    @apply border-slate-200;
+  }
+
+  body {
+    @apply bg-slate-100 text-slate-950 antialiased;
+  }
+
+  :focus-visible {
+    @apply outline-none ring-2 ring-violet-500 ring-offset-2;
+  }
+}
+
+@layer components {
+  .page-shell {
+    @apply space-y-6 p-4 md:p-8;
+  }
+
+  .page-heading {
+    @apply text-2xl font-bold tracking-tight text-slate-950 md:text-3xl;
+  }
+
+  .page-subtitle {
+    @apply mt-1 text-sm text-slate-500;
+  }
+
+  .surface-card {
+    @apply rounded-2xl border border-slate-200 bg-white shadow-sm;
+  }
+}
+
+.auditbar::-webkit-scrollbar,
+.mobilesidebar::-webkit-scrollbar {
+  width: 0;
+}
+
+@media print {
+  body {
+    background: white !important;
+  }
+}

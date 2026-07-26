@@ -1,0 +1,67 @@
+# Thucyd
+
+Plateforme d'audit de conformité avec questionnaire et plan d'action
+autosauvegardés, backend FastAPI sur Neon PostgreSQL et entretiens vidéo
+assistés par IA avec Tavus et OpenAI.
+
+## Organisation
+
+```text
+Thucyd/
+├── frontend/   # Next.js — déploiement Vercel
+├── backend/    # FastAPI + Docker — Render ou autre hébergeur
+└── .github/
+    └── workflows/ci.yml
+```
+
+## Développement local
+
+Backend :
+
+```powershell
+Copy-Item backend/.env.example backend/.env
+cd backend
+docker compose up -d --build
+docker compose exec -T backend python -m unittest discover -s tests -v
+```
+
+Frontend :
+
+```powershell
+Copy-Item frontend/.env.example frontend/.env
+cd frontend
+npm ci
+npm run dev
+```
+
+L'interface est disponible sur `http://localhost:3000` et l'API sur
+`http://localhost:8080`.
+
+## Déploiement
+
+### Vercel
+
+- importer ce dépôt ;
+- définir **Root Directory** sur `frontend` ;
+- définir `BACKEND_URL` avec l'URL HTTPS publique du backend ;
+- conserver `main` comme branche de production.
+
+### Backend
+
+- créer un service Docker depuis ce dépôt ;
+- définir le répertoire racine sur `backend` ;
+- utiliser `/api/healthchecker` comme health check ;
+- injecter les variables de `backend/.env.example` depuis le gestionnaire de
+  secrets de l'hébergeur ;
+- ne jamais copier `backend/.env` dans l'image ou dans Git.
+
+Le LLM personnalisé de la persona Tavus doit utiliser l'URL publique du backend
+terminée par `/v1`.
+
+## Intégration continue
+
+La CI vérifie à chaque push et Pull Request :
+
+- lint, types et build du frontend ;
+- tests Python et build Docker du backend.
+
