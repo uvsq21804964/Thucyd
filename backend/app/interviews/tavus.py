@@ -42,6 +42,11 @@ def _error_detail(response: httpx.Response) -> str:
                         "La limite de conversations Tavus simultanées est atteinte. "
                         "Reprenez la conversation active ou terminez-la avant de réessayer."
                     )
+                if "out of conversational credits" in detail.casefold():
+                    return (
+                        "Le compte Tavus n'a plus de crédits conversationnels. "
+                        "Ajoutez des minutes ou activez un forfait Tavus avant de réessayer."
+                    )
                 return detail
             if isinstance(value, dict):
                 nested = value.get("message") or value.get("detail")
@@ -88,7 +93,12 @@ def create_tavus_conversation(
 
     if response.is_error:
         detail = _error_detail(response)
-        status_code = 409 if "limite de conversations Tavus" in detail else 502
+        if "limite de conversations Tavus" in detail:
+            status_code = 409
+        elif "crédits conversationnels" in detail:
+            status_code = 402
+        else:
+            status_code = 502
         raise TavusAPIError(status_code, detail)
     try:
         return TavusConversation.model_validate(response.json())

@@ -127,6 +127,28 @@ class TavusClientTests(unittest.TestCase):
         self.assertEqual(caught.exception.status_code, 409)
         self.assertIn("limite de conversations Tavus", caught.exception.detail)
 
+    def test_missing_credits_is_mapped_to_payment_required(self):
+        response = Mock()
+        response.is_error = True
+        response.json.return_value = {
+            "message": "The user is out of conversational credits."
+        }
+
+        with (
+            patch.object(settings, "TAVUS_API_KEY", "server-secret"),
+            patch.object(settings, "TAVUS_PERSONA_ID", "p-test"),
+            patch("app.interviews.tavus.httpx.post", return_value=response),
+            self.assertRaises(TavusAPIError) as caught,
+        ):
+            create_tavus_conversation(
+                conversation_name="Audit",
+                conversational_context="context",
+                custom_greeting="Bonjour",
+            )
+
+        self.assertEqual(caught.exception.status_code, 402)
+        self.assertIn("crédits conversationnels", caught.exception.detail)
+
     def test_gets_conversation_status(self):
         response = Mock()
         response.status_code = 200
