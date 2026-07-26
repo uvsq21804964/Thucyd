@@ -12,6 +12,7 @@ export type InterviewSession = {
   audit_id: string;
   status: string;
   custom_greeting: string;
+  reused?: boolean;
   tavus: TavusRoom;
 };
 

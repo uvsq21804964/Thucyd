@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import {
   ArrowLeft,
@@ -48,6 +48,7 @@ export default function AIInterviewPage({
   const [session, setSession] = useState<InterviewSession | null>(null);
   const [details, setDetails] = useState<InterviewSessionDetails | null>(null);
   const [error, setError] = useState('');
+  const startInProgressRef = useRef(false);
 
   useEffect(() => {
     API.get<AuditInfo>(`audit/${params.audit}`)
@@ -69,6 +70,8 @@ export default function AIInterviewPage({
   };
 
   const startInterview = async () => {
+    if (startInProgressRef.current) return;
+    startInProgressRef.current = true;
     setError('');
     setPhase('creating');
     try {
@@ -82,6 +85,8 @@ export default function AIInterviewPage({
     } catch (requestError) {
       setError(interviewErrorMessage(requestError));
       setPhase('error');
+    } finally {
+      startInProgressRef.current = false;
     }
   };
 

@@ -7,7 +7,11 @@ import httpx
 os.environ.setdefault("DATABASE_URL", "postgresql+psycopg://test:test@localhost/test")
 os.environ.setdefault("INITIAL_ADMIN_PASSWORD", "test-admin-password")
 
-from app.interviews.tavus import TavusAPIError, create_tavus_conversation
+from app.interviews.tavus import (
+    TavusAPIError,
+    create_tavus_conversation,
+    get_tavus_conversation_status,
+)
 from app.settings import settings
 
 
@@ -99,6 +103,44 @@ class TavusClientTests(unittest.TestCase):
             )
 
         self.assertEqual(caught.exception.status_code, 502)
+
+
+    def test_concurrency_limit_is_mapped_to_conflict_with_helpful_message(self):
+        response = Mock()
+        response.is_error = True
+        response.json.return_value = {
+            "message": "User has reached maximum concurrent conversations"
+        }
+
+        with (
+            patch.object(settings, "TAVUS_API_KEY", "server-secret"),
+            patch.object(settings, "TAVUS_PERSONA_ID", "p-test"),
+            patch("app.interviews.tavus.httpx.post", return_value=response),
+            self.assertRaises(TavusAPIError) as caught,
+        ):
+            create_tavus_conversation(
+                conversation_name="Audit",
+                conversational_context="context",
+                custom_greeting="Bonjour",
+            )
+
+        self.assertEqual(caught.exception.status_code, 409)
+        self.assertIn("limite de conversations Tavus", caught.exception.detail)
+
+    def test_gets_conversation_status(self):
+        response = Mock()
+        response.status_code = 200
+        response.is_error = False
+        response.json.return_value = {"status": "active"}
+
+        with (
+            patch.object(settings, "TAVUS_API_KEY", "server-secret"),
+            patch("app.interviews.tavus.httpx.get", return_value=response) as get,
+        ):
+            status = get_tavus_conversation_status("c-test")
+
+        self.assertEqual(status, "active")
+        self.assertIn("/c-test", get.call_args.args[0])
 
 
 if __name__ == "__main__":

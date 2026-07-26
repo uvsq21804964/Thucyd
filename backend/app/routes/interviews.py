@@ -17,6 +17,7 @@ from app.interviews.tavus import (
     TavusAPIError,
     create_tavus_conversation,
     end_tavus_conversation,
+    get_tavus_conversation_status,
 )
 from app.interviews.tokens import create_session_token, extract_session_claims, tavus_context
 from app.oauth2 import AuthJWT
@@ -83,6 +84,83 @@ async def _stream_response(text: str, model: str):
     yield "data: [DONE]\n\n"
 
 
+
+def _session_response(
+    interview: InterviewSessionModel,
+    audit_id: UUID,
+    custom_greeting: str,
+    tavus_state: dict[str, Any],
+    *,
+    reused: bool,
+):
+    return {
+        "session_id": str(interview.id),
+        "audit_id": str(audit_id),
+        "status": "active",
+        "custom_greeting": custom_greeting,
+        "reused": reused,
+        "tavus": tavus_state,
+    }
+
+
+async def _reuse_active_session(
+    audit_id: UUID,
+    custom_greeting: str,
+):
+    with SessionLocal() as database:
+        interview = database.scalar(
+            select(InterviewSessionModel)
+            .where(
+                InterviewSessionModel.audit_id == audit_id,
+                InterviewSessionModel.status == "active",
+            )
+            .order_by(InterviewSessionModel.created_at.desc())
+            .limit(1)
+        )
+        if interview is None:
+            return None
+        tavus_state = dict(interview.followups or {}).get("tavus") or {}
+        conversation_id = tavus_state.get("conversation_id")
+        conversation_url = tavus_state.get("conversation_url")
+        if not conversation_id or not conversation_url:
+            return None
+        session_id = interview.id
+
+    try:
+        provider_status = await run_in_threadpool(
+            get_tavus_conversation_status,
+            conversation_id,
+        )
+    except TavusAPIError:
+        # A transient status lookup must not create a duplicate paid conversation.
+        provider_status = str(tavus_state.get("status") or "active").lower()
+
+    if provider_status == "active":
+        tavus_state["status"] = "active"
+        with SessionLocal() as database:
+            interview = database.get(InterviewSessionModel, session_id)
+            if interview is None:
+                return None
+            return _session_response(
+                interview,
+                audit_id,
+                custom_greeting,
+                tavus_state,
+                reused=True,
+            )
+
+    with session_scope() as database:
+        interview = database.get(InterviewSessionModel, session_id)
+        if interview is not None:
+            state = dict(interview.followups or {})
+            previous_tavus = dict(state.get("tavus") or {})
+            previous_tavus["status"] = provider_status
+            state["tavus"] = previous_tavus
+            interview.followups = state
+            interview.status = "ended"
+    return None
+
+
 @router.post("/interviews/{audit_id}/sessions")
 async def create_interview_session(
     audit_id: str,
@@ -99,8 +177,15 @@ async def create_interview_session(
         raise HTTPException(status_code=503, detail="TAVUS_PERSONA_ID n'est pas configuré")
 
     parsed_audit_id = UUID(audit_id)
-    session_id = uuid4()
     custom_greeting = str(audit.fiche[0]["question"]).strip()
+    reusable_session = await _reuse_active_session(
+        parsed_audit_id,
+        custom_greeting,
+    )
+    if reusable_session is not None:
+        return reusable_session
+
+    session_id = uuid4()
     token = create_session_token(session_id, parsed_audit_id)
     conversational_context = tavus_context(token)
 
@@ -147,14 +232,13 @@ async def create_interview_session(
         interview.followups = state
         interview.status = "active"
 
-    return {
-        "session_id": str(session_id),
-        "audit_id": audit_id,
-        "status": "active",
-        "custom_greeting": custom_greeting,
-        "conversational_context": conversational_context,
-        "tavus": tavus_state,
-    }
+    return _session_response(
+        interview,
+        parsed_audit_id,
+        custom_greeting,
+        tavus_state,
+        reused=False,
+    )
 
 @router.get("/interviews/{session_id}")
 async def get_interview_session(

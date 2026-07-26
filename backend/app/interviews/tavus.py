@@ -36,7 +36,17 @@ def _error_detail(response: httpx.Response) -> str:
         for key in ("message", "detail", "error"):
             value = payload.get(key)
             if isinstance(value, str) and value.strip():
-                return value.strip()[:500]
+                detail = value.strip()[:500]
+                if "maximum concurrent conversations" in detail.casefold():
+                    return (
+                        "La limite de conversations Tavus simultanées est atteinte. "
+                        "Reprenez la conversation active ou terminez-la avant de réessayer."
+                    )
+                return detail
+            if isinstance(value, dict):
+                nested = value.get("message") or value.get("detail")
+                if isinstance(nested, str) and nested.strip():
+                    return nested.strip()[:500]
     return "La création de la conversation Tavus a échoué."
 
 
@@ -77,11 +87,41 @@ def create_tavus_conversation(
         raise TavusAPIError(502, "Tavus est temporairement injoignable.") from exc
 
     if response.is_error:
-        raise TavusAPIError(502, _error_detail(response))
+        detail = _error_detail(response)
+        status_code = 409 if "limite de conversations Tavus" in detail else 502
+        raise TavusAPIError(status_code, detail)
     try:
         return TavusConversation.model_validate(response.json())
     except (ValueError, TypeError) as exc:
         raise TavusAPIError(502, "Réponse de création Tavus invalide.") from exc
+
+
+def get_tavus_conversation_status(conversation_id: str) -> str:
+    if not settings.TAVUS_API_KEY:
+        raise TavusAPIError(503, "TAVUS_API_KEY n'est pas configurée.")
+    safe_id = quote(conversation_id, safe="")
+    try:
+        response = httpx.get(
+            f"{TAVUS_CONVERSATIONS_URL}/{safe_id}",
+            headers={"x-api-key": settings.TAVUS_API_KEY},
+            timeout=10,
+        )
+    except httpx.RequestError as exc:
+        logger.warning("Tavus conversation status request failed: %s", type(exc).__name__)
+        raise TavusAPIError(502, "Tavus est temporairement injoignable.") from exc
+    if response.status_code == 404:
+        return "ended"
+    if response.is_error:
+        raise TavusAPIError(502, _error_detail(response))
+    try:
+        payload: Any = response.json()
+    except ValueError as exc:
+        raise TavusAPIError(502, "Réponse de statut Tavus invalide.") from exc
+    status = payload.get("status") if isinstance(payload, dict) else None
+    if not isinstance(status, str) or not status.strip():
+        raise TavusAPIError(502, "Réponse de statut Tavus invalide.")
+    return status.strip().lower()
+
 
 def end_tavus_conversation(conversation_id: str) -> None:
     if not settings.TAVUS_API_KEY:
