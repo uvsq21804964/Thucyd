@@ -23,6 +23,7 @@ export default function TavusCall({
   const callRef = useRef<DailyCall | null>(null);
   const finishStartedRef = useRef(false);
   const [status, setStatus] = useState<CallStatus>('connecting');
+  const [frameReady, setFrameReady] = useState(false);
   const [error, setError] = useState('');
 
   const finishInterview = useCallback(async () => {
@@ -42,7 +43,13 @@ export default function TavusCall({
   useEffect(() => {
     let disposed = false;
     let call: DailyCall | null = null;
+    const revealTimer = window.setTimeout(() => {
+      if (!disposed) setFrameReady(true);
+    }, 8000);
 
+    const loaded = () => {
+      if (!disposed) setFrameReady(true);
+    };
     const joined = () => {
       if (!disposed) setStatus('joined');
     };
@@ -90,6 +97,7 @@ export default function TavusCall({
           },
         });
         callRef.current = call;
+        call.on('loaded', loaded);
         call.on('joined-meeting', joined);
         call.on('left-meeting', left);
         call.on('error', callError);
@@ -111,8 +119,10 @@ export default function TavusCall({
     start().catch(() => undefined);
     return () => {
       disposed = true;
+      window.clearTimeout(revealTimer);
       const wasJoined = call?.meetingState() === 'joined-meeting';
       if (call) {
+        call.off('loaded', loaded);
         call.off('joined-meeting', joined);
         call.off('left-meeting', left);
         call.off('error', callError);
@@ -137,7 +147,7 @@ export default function TavusCall({
     <div className="relative h-full min-h-[420px] overflow-hidden rounded-2xl bg-slate-950 shadow-2xl shadow-slate-950/20">
       <div ref={containerRef} className="absolute inset-0" />
 
-      {status === 'connecting' && (
+      {status === 'connecting' && !frameReady && (
         <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-slate-950 text-white">
           <span className="relative flex h-20 w-20 items-center justify-center rounded-full bg-violet-500/15">
             <Loader2 className="h-9 w-9 animate-spin text-violet-300" />
