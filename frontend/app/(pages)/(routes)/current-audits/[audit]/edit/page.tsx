@@ -16,7 +16,7 @@ import Questionnaire from './_components/Questionnaire';
 type AuditInfo = { companie: string; chef?: string; finished: boolean };
 type CurrentUser = { name: string; role: number };
 type Gauge = { incomplete: number; 'total question': number };
-type QuestionData = { ref: string | number; catégorie: string; chantier: string; question: string; comment: string; 'note numérique': number | null; 'aide à la notation': string[] };
+type QuestionData = { ref: string | number; catégorie: string; chantier: string; question: string; comment: string; 'note numérique': number | null; 'aide à la notation': string[]; display_if?: { question_ref: number; operator: string; value?: number | number[] } };
 type ApiError = { response?: { data?: { detail?: string | { incomplete?: number } } } };
 
 export default function Edit({ params, searchParams }: { params: { audit: string }; searchParams: { category?: string; question?: string } }) {
@@ -64,9 +64,18 @@ export default function Edit({ params, searchParams }: { params: { audit: string
   const filteredQuestions = onlyIncomplete ? questions.filter((question) => question['note numérique'] === null) : questions;
   const completeInCategory = questions.filter((question) => question['note numérique'] !== null).length;
 
-  const refreshGauge = useCallback(() => {
-    API.get<Gauge>(`completionGauge/${params.audit}`).then(({ data }) => setGauge(data)).catch(() => undefined);
-  }, [params.audit]);
+  const refreshAuditState = useCallback(() => {
+    Promise.all([
+      API.get<Gauge>(`completionGauge/${params.audit}`),
+      API.get<string[]>(`categories/${params.audit}`),
+      category ? API.get<QuestionData[]>(`questions/${encodeURIComponent(category)}/${params.audit}`) : Promise.resolve({ data: [] as QuestionData[] }),
+    ]).then(([gaugeResponse, categoriesResponse, questionsResponse]) => {
+      setGauge(gaugeResponse.data);
+      setCategories(categoriesResponse.data);
+      if (category && categoriesResponse.data.includes(category)) setQuestions(questionsResponse.data);
+      else setCategory(categoriesResponse.data[0] || '');
+    }).catch(() => undefined);
+  }, [category, params.audit]);
 
   const updateQuestion = useCallback((ref: string | number, mark: number | null, comment: string) => {
     setQuestions((current) => current.map((question) => question.ref === ref ? { ...question, 'note numérique': mark, comment } : question));
@@ -107,7 +116,7 @@ export default function Edit({ params, searchParams }: { params: { audit: string
 
       <div className="flex flex-wrap items-center justify-between gap-3"><p className="text-sm text-slate-600">{completeInCategory}/{questions.length} complétées dans cette catégorie</p><Button type="button" size="sm" variant={onlyIncomplete ? 'default' : 'outline'} onClick={() => setOnlyIncomplete((value) => !value)} className="rounded-xl"><ListFilter className="mr-2 h-4 w-4" />{onlyIncomplete ? 'Afficher toutes les questions' : 'Afficher uniquement les incomplètes'}</Button></div>
 
-      {loadingQuestions ? <div className="surface-card flex items-center justify-center gap-2 p-12 text-sm text-slate-500"><Loader2 className="h-5 w-5 animate-spin" />Chargement des questions…</div> : onlyIncomplete && filteredQuestions.length === 0 ? <div className="surface-card p-10 text-center"><CheckCircle2 className="mx-auto h-8 w-8 text-emerald-600" /><p className="mt-3 font-semibold text-slate-900">Cette catégorie est complète</p><Button type="button" variant="link" onClick={() => setOnlyIncomplete(false)}>Afficher toutes les questions</Button></div> : <Questionnaire questions={filteredQuestions} para={params.audit} onChange={updateQuestion} onSaved={refreshGauge} />}
+      {loadingQuestions ? <div className="surface-card flex items-center justify-center gap-2 p-12 text-sm text-slate-500"><Loader2 className="h-5 w-5 animate-spin" />Chargement des questions…</div> : onlyIncomplete && filteredQuestions.length === 0 ? <div className="surface-card p-10 text-center"><CheckCircle2 className="mx-auto h-8 w-8 text-emerald-600" /><p className="mt-3 font-semibold text-slate-900">Cette catégorie est complète</p><Button type="button" variant="link" onClick={() => setOnlyIncomplete(false)}>Afficher toutes les questions</Button></div> : <Questionnaire questions={filteredQuestions} para={params.audit} onChange={updateQuestion} onSaved={refreshAuditState} />}
 
       {categories.length > 1 && <footer className="flex items-center justify-between border-t border-slate-200 pt-5"><Button type="button" variant="outline" disabled={categoryIndex === 0} onClick={() => { setCategory(categories[categoryIndex - 1]); setOnlyIncomplete(false); }} className="rounded-xl"><ChevronLeft className="mr-2 h-4 w-4" />Précédente</Button><span className="text-xs text-slate-500">{categoryIndex + 1} / {categories.length}</span><Button type="button" variant="outline" disabled={categoryIndex === categories.length - 1} onClick={() => { setCategory(categories[categoryIndex + 1]); setOnlyIncomplete(false); }} className="rounded-xl">Suivante<ChevronRight className="ml-2 h-4 w-4" /></Button></footer>}
     </div>

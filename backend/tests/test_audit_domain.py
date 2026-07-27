@@ -80,6 +80,19 @@ class AuditDomainTests(unittest.TestCase):
         self.assertEqual(summary["categories"][0]["score"], 3)
         self.assertIsNone(summary["categories"][1]["score"])
 
+    def test_completion_ignores_inactive_conditional_questions(self):
+        questions = [self.question(1, None), self.question(2, None)]
+        questions[1]["display_if"] = {
+            "question_ref": 1,
+            "operator": "lte",
+            "value": 2,
+        }
+        item = self.audit(questions)
+        self.assertEqual(item.incomplete(), {"incomplete": 1, "total question": 1})
+        item.set_mark(1, 1)
+        self.assertEqual(item.incomplete(), {"incomplete": 1, "total question": 2})
+        item.set_mark(1, 4)
+        self.assertEqual(item.incomplete(), {"incomplete": 0, "total question": 1})
     def test_embedded_questionnaire_keys_are_normalized(self):
         with gzip.open("app/fiche/audit_book.json.gz", "rt", encoding="utf-8") as source:
             questions = OpenAudits._normalize_questions(json.load(source))

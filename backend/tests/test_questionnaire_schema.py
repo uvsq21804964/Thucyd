@@ -47,6 +47,34 @@ class QuestionnaireSchemaTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             audits.model_validate(self.payload([answered]))
 
+    def test_accepts_a_condition_referencing_an_earlier_question(self):
+        conditional = question(2)
+        conditional["display_if"] = {
+            "question_ref": 1,
+            "operator": "lte",
+            "value": 2,
+        }
+        payload = audits.model_validate(self.payload([question(1), conditional]))
+        self.assertEqual(payload.questionnaire[1].display_if.question_ref, 1)
+        self.assertEqual(payload.questionnaire[1].display_if.operator, "lte")
+
+    def test_accepts_answered_condition_without_value(self):
+        conditional = question(2)
+        conditional["display_if"] = {"question_ref": 1, "operator": "answered"}
+        payload = audits.model_validate(self.payload([question(1), conditional]))
+        self.assertIsNone(payload.questionnaire[1].display_if.value)
+
+    def test_rejects_condition_referencing_a_later_question(self):
+        first = question(1)
+        first["display_if"] = {"question_ref": 2, "operator": "eq", "value": 0}
+        with self.assertRaises(ValidationError):
+            audits.model_validate(self.payload([first, question(2)]))
+
+    def test_rejects_condition_with_invalid_value_shape(self):
+        conditional = question(2)
+        conditional["display_if"] = {"question_ref": 1, "operator": "in", "value": 2}
+        with self.assertRaises(ValidationError):
+            audits.model_validate(self.payload([question(1), conditional]))
     def test_rejects_unknown_keys(self):
         invalid = {**question(), "clé inattendue": True}
         with self.assertRaises(ValidationError):

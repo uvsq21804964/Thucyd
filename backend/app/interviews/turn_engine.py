@@ -17,6 +17,7 @@ from app.interviews.ai import (
     select_candidates,
 )
 from app.interviews.models import InterviewSessionModel, InterviewTurnModel
+from app.question_conditions import active_question_refs, active_questions
 
 CLOSING_TEXT = (
     "Merci pour vos réponses. L'entretien est maintenant terminé. "
@@ -211,9 +212,9 @@ def _merge_result(question: dict, update: AnswerUpdate) -> bool:
     return True
 
 
-def _next_uncovered_index(references: list[int], current_index: int, covered_refs: set[int]) -> int | None:
+def _next_uncovered_index(references: list[int], current_index: int, covered_refs: set[int], eligible_refs: set[int] | None = None) -> int | None:
     for index in range(current_index + 1, len(references)):
-        if references[index] not in covered_refs:
+        if references[index] not in covered_refs and (eligible_refs is None or references[index] in eligible_refs):
             return index
     return None
 
@@ -506,7 +507,18 @@ def process_turn(session_id: UUID, audit_id: UUID, messages: list) -> str:
             snapshot_index,
         )
 
-    candidates = select_candidates(questions, snapshot_index, transcript)
+    eligible_questions = active_questions(questions)
+    active_index = next(
+        (
+            index
+            for index, question in enumerate(eligible_questions)
+            if int(question["ref"]) == current_reference
+        ),
+        None,
+    )
+    if active_index is None:
+        raise HTTPException(status_code=409, detail="La question courante n'est plus active")
+    candidates = select_candidates(eligible_questions, active_index, transcript)
     ai_decision = make_decision(
         current_question=current_question,
         candidates=candidates,
@@ -587,13 +599,17 @@ def process_turn(session_id: UUID, audit_id: UUID, messages: list) -> str:
         else:
             covered_refs.add(current_reference)
             state["covered_refs"] = sorted(covered_refs)
-            next_index = _next_uncovered_index(references, snapshot_index, covered_refs)
+            eligible_refs = set(active_question_refs(stored_questions))
+            next_index = _next_uncovered_index(
+                references, snapshot_index, covered_refs, eligible_refs
+            )
             if next_index is None:
                 state["stage"] = "closing"
+                active_stored_questions = active_questions(stored_questions)
                 assistant_text = _closing_prompt(
-                    stored_questions,
-                    len(covered_refs),
-                    len(references),
+                    active_stored_questions,
+                    len(covered_refs & eligible_refs),
+                    len(eligible_refs),
                 )
                 state["closing_prompt"] = assistant_text
                 action = "closing"

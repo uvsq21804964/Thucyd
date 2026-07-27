@@ -80,7 +80,7 @@ def _validate_metadata(filename: str, content_type: str) -> None:
 
 
 def _question_exists(audit, question_ref: int) -> bool:
-    return any(int(question.get("ref", -1)) == question_ref for question in audit.fiche)
+    return audit.is_question_active(question_ref)
 
 
 def _can_delete(evidence: EvidenceModel, role: UserRole, username: str, audit) -> bool:

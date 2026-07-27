@@ -9,7 +9,7 @@ type QuestionData = {
   question: string;
   comment: string;
   'note numérique': number | null;
-  'aide à la notation': string[];
+  'aide à la notation': string[]; display_if?: { question_ref: number; operator: string; value?: number | number[] };
 };
 
 export default function Questionnaire({ questions, para, onChange, onSaved }: { questions: QuestionData[]; para: string; onChange: (ref: string | number, mark: number | null, comment: string) => void; onSaved: () => void }) {

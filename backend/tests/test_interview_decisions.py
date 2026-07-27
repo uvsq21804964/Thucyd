@@ -265,6 +265,11 @@ class InterviewDecisionTests(unittest.TestCase):
     def test_next_question_skips_already_covered_references(self):
         self.assertEqual(_next_uncovered_index([1, 2, 3, 4], 0, {1, 2, 3}), 3)
         self.assertIsNone(_next_uncovered_index([1, 2], 0, {1, 2}))
+        self.assertEqual(
+            _next_uncovered_index([1, 2, 3], 0, {1}, {1, 3}),
+            2,
+        )
+        self.assertIsNone(_next_uncovered_index([1, 2], 0, {1}, {1}))
 
 
 if __name__ == "__main__":

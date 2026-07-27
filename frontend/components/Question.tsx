@@ -5,7 +5,7 @@
 import axios from 'axios';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { AlertCircle, BookOpen, Check, Cloud } from 'lucide-react';
+import { AlertCircle, BookOpen, Check, Cloud, GitBranch } from 'lucide-react';
 import { useForm } from 'react-hook-form';
 import * as z from 'zod';
 
@@ -23,7 +23,7 @@ const schema = z.object({
 
 type FormValues = z.infer<typeof schema>;
 type SaveState = 'idle' | 'saving' | 'saved' | 'error';
-type QuestionData = { ref: string | number; catégorie: string; chantier: string; question: string; comment: string; 'note numérique': number | null; 'aide à la notation': string[] };
+type QuestionData = { ref: string | number; catégorie: string; chantier: string; question: string; comment: string; 'note numérique': number | null; 'aide à la notation': string[]; display_if?: { question_ref: number; operator: string; value?: number | number[] } };
 type QuestionProps = {
   question: QuestionData;
   nb: number;
@@ -135,7 +135,7 @@ export default function Question({ question, nb, parametre, onChange, onSaved }:
   return (
     <Card id={`question-${question.ref}`} className="scroll-mt-24 overflow-hidden rounded-2xl border-slate-200 shadow-sm target:ring-2 target:ring-violet-400">
       <CardHeader className="border-b border-slate-100 bg-slate-50/70 p-5">
-        <div className="flex items-start gap-3"><span className="flex h-8 min-w-8 items-center justify-center rounded-lg bg-violet-100 text-sm font-bold text-violet-700">{nb + 1}</span><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center justify-between gap-2"><p className="text-xs font-semibold uppercase tracking-wide text-violet-700">{question.chantier}</p><span className={cn('flex items-center gap-1.5 text-xs font-medium', status.className)} aria-live="polite"><StatusIcon className={cn('h-3.5 w-3.5', saveState === 'saving' && 'animate-pulse')} />{status.label}</span></div><h2 className="mt-1 text-base font-semibold leading-6 text-slate-950">{question.question}</h2></div></div>
+        <div className="flex items-start gap-3"><span className="flex h-8 min-w-8 items-center justify-center rounded-lg bg-violet-100 text-sm font-bold text-violet-700">{nb + 1}</span><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center justify-between gap-2"><p className="text-xs font-semibold uppercase tracking-wide text-violet-700">{question.chantier}</p>{question.display_if && <span className="inline-flex items-center gap-1 rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-semibold text-violet-700"><GitBranch className="h-3 w-3" />Conditionnelle</span>}<span className={cn('flex items-center gap-1.5 text-xs font-medium', status.className)} aria-live="polite"><StatusIcon className={cn('h-3.5 w-3.5', saveState === 'saving' && 'animate-pulse')} />{status.label}</span></div><h2 className="mt-1 text-base font-semibold leading-6 text-slate-950">{question.question}</h2></div></div>
       </CardHeader>
       <CardContent className="space-y-5 p-5">
         <fieldset><legend className="text-sm font-semibold text-slate-800">Niveau de conformité</legend><p className="mt-1 text-xs text-slate-500">0 = non conforme · 4 = totalement maîtrisé</p><div className="mt-3 grid grid-cols-5 gap-2">{[0, 1, 2, 3, 4].map((score) => <button key={score} type="button" onClick={() => form.setValue('note', String(score), { shouldValidate: true, shouldDirty: true })} className={cn('h-11 rounded-xl border text-sm font-bold transition', selectedNote === String(score) ? 'border-violet-600 bg-violet-600 text-white shadow-sm' : 'border-slate-200 bg-white text-slate-600 hover:border-violet-300 hover:bg-violet-50')} aria-pressed={selectedNote === String(score)}>{score}</button>)}</div>{form.formState.errors.note && <p className="mt-2 text-sm text-red-600">{form.formState.errors.note.message}</p>}</fieldset>

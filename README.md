@@ -37,6 +37,19 @@ npm run dev
 L'interface est disponible sur `http://localhost:3000` et l'API sur
 `http://localhost:8080`.
 
+## Questionnaires conditionnels
+
+Ajoutez `display_if` à une question pour ne l'afficher que selon la note d'une
+question précédente :
+
+```json
+"display_if": { "question_ref": 1, "operator": "lte", "value": 2 }
+```
+
+Opérateurs disponibles : `eq`, `neq`, `lt`, `lte`, `gt`, `gte`, `in`,
+`not_in`, `answered` et `unanswered`. Les branches masquées sont ignorées dans
+la progression, le score, les preuves et l'entretien IA.
+
 ## Déploiement
 
 ### Vercel

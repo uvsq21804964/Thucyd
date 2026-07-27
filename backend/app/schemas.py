@@ -1,7 +1,7 @@
 from datetime import datetime
-from typing import List, Union
+from typing import List, Literal, Union
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, constr, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, constr, field_validator, model_validator
 
 
 class UserBaseSchema(BaseModel):
@@ -44,6 +44,29 @@ class question(BaseModel):
     content: str
 
 
+class DisplayCondition(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    question_ref: int = Field(ge=1)
+    operator: Literal["eq", "neq", "lt", "lte", "gt", "gte", "in", "not_in", "answered", "unanswered"]
+    value: float | list[float] | None = None
+
+    @model_validator(mode="after")
+    def validate_value(self):
+        if self.operator in {"answered", "unanswered"}:
+            if self.value is not None:
+                raise ValueError("value doit être omise avec answered ou unanswered")
+        elif self.operator in {"in", "not_in"}:
+            if not isinstance(self.value, list) or not self.value:
+                raise ValueError("value doit être une liste non vide avec in ou not_in")
+        elif isinstance(self.value, list) or self.value is None:
+            raise ValueError("value doit être un nombre pour cet opérateur")
+        values = self.value if isinstance(self.value, list) else [self.value]
+        if any(value is not None and not 0 <= value <= 4 for value in values):
+            raise ValueError("les valeurs de condition doivent être comprises entre 0 et 4")
+        return self
+
+
 class AuditQuestionInput(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
@@ -54,6 +77,7 @@ class AuditQuestionInput(BaseModel):
     comment: None = None
     numeric_mark: None = Field(default=None, alias="note numérique")
     marking_guide: list[str] = Field(alias="aide à la notation", max_length=30)
+    display_if: DisplayCondition | None = None
 
     @field_validator("category", "chantier", "question")
     @classmethod
@@ -86,6 +110,15 @@ class audits(BaseModel):
         refs = [question.ref for question in value]
         if len(refs) != len(set(refs)):
             raise ValueError("chaque question doit avoir une référence unique")
+        positions = {question.ref: index for index, question in enumerate(value)}
+        for index, question in enumerate(value):
+            if question.display_if is None:
+                continue
+            source_position = positions.get(question.display_if.question_ref)
+            if source_position is None:
+                raise ValueError("chaque condition doit référencer une question existante")
+            if source_position >= index:
+                raise ValueError("une condition doit référencer une question placée plus tôt")
         return value
 
 

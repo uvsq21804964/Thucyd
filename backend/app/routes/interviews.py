@@ -21,6 +21,7 @@ from app.interviews.tavus import (
 )
 from app.interviews.tokens import create_session_token, extract_session_claims, tavus_context
 from app.oauth2 import AuthJWT
+from app.question_conditions import active_question_refs
 from app.routes.GestionAudit import _authorized_audit
 from app.settings import settings
 
@@ -31,7 +32,7 @@ def _opening_greeting(company_name: str, total_questions: int) -> str:
     estimated_minutes = max(5, min(45, round(total_questions * 0.75)))
     return (
         f"Bonjour, je suis l'auditeur IA de Thucyd pour l'audit de {company_name}. "
-        f"L'entretien comporte {total_questions} questions et durera environ {estimated_minutes} minutes. "
+        f"L'entretien peut comporter jusqu'à {total_questions} questions et durera environ {estimated_minutes} minutes. "
         "Vos réponses seront enregistrées automatiquement. Vous pourrez me demander de répéter, "
         "de reformuler, de faire une pause ou de corriger votre dernière réponse. "
         "Êtes-vous prêt à commencer ?"
@@ -236,15 +237,16 @@ def _session_details(
     document_evidence: dict[int, list[dict]] | None = None,
 ) -> dict[str, Any]:
     state = dict(interview.followups or {})
-    references = [int(reference) for reference in interview.question_refs]
+    all_references = [int(reference) for reference in interview.question_refs]
+    references = active_question_refs(audit.fiche)
     covered_refs = {
         int(reference)
         for reference in state.get("covered_refs", [])
         if int(reference) in references
     }
     current_reference = (
-        references[min(interview.current_index, len(references) - 1)]
-        if references
+        all_references[min(interview.current_index, len(all_references) - 1)]
+        if all_references
         else None
     )
     current_question = next(

@@ -1,6 +1,7 @@
 from datetime import datetime
 
 from app.QuestionsDao.question import Question
+from app.question_conditions import active_questions as filter_active_questions
 
 CATEGORY = "cat\u00e9gorie"
 MARKING_GUIDE = "aide \u00e0 la notation"
@@ -53,12 +54,20 @@ class Audit:
     def set_description(self, description):
         self.description = description
 
+    def active_questions(self):
+        return filter_active_questions(self.fiche)
+
+    def is_question_active(self, question_ref: int):
+        return any(int(question["ref"]) == question_ref for question in self.active_questions())
+
     def incomplete(self):
-        count = sum(question[NUMERIC_MARK] is None for question in self.fiche)
-        return {"incomplete": count, "total question": len(self.fiche)}
+        questions = self.active_questions()
+        count = sum(question[NUMERIC_MARK] is None for question in questions)
+        return {"incomplete": count, "total question": len(questions)}
 
     def questionnaire_complete(self):
-        return bool(self.fiche) and all(question[NUMERIC_MARK] is not None for question in self.fiche)
+        questions = self.active_questions()
+        return bool(questions) and all(question[NUMERIC_MARK] is not None for question in questions)
 
     def finis(self):
         return self.status == STATUS_FINISHED
@@ -68,12 +77,13 @@ class Audit:
         self.datefin = datetime.now()
 
     def CyberScore(self):
-        if not self.fiche:
+        questions = self.active_questions()
+        if not questions:
             return 0
-        for question in self.fiche:
+        for question in questions:
             if question[NUMERIC_MARK] is None:
                 return f"audit incomplet voire la question {question['ref']}"
-        return sum(question[NUMERIC_MARK] for question in self.fiche) / len(self.fiche)
+        return sum(question[NUMERIC_MARK] for question in questions) / len(questions)
 
     def showinfo(self):
         infos = {

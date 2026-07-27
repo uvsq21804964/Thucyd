@@ -66,7 +66,7 @@ async def create_audit(payload: schemas.audits, Authorize: AuthJWT = Depends(), 
     if payload.questionnaire is not None:
         questionnaire = [
             {
-                **question.model_dump(by_alias=True),
+                **question.model_dump(by_alias=True, exclude_none=True),
                 "comment": "",
                 "note numérique": None,
             }
@@ -121,7 +121,7 @@ async def complete_audit(id: str, Authorize: AuthJWT = Depends(), access_token: 
 
 def _build_audit_results(item):
     category_totals = {}
-    for question in item.fiche:
+    for question in item.active_questions():
         category = question[CATEGORY]
         bucket = category_totals.setdefault(category, {"sum": 0, "answered": 0, "total": 0})
         bucket["total"] += 1
@@ -139,14 +139,14 @@ def _build_audit_results(item):
         }
         for name, values in category_totals.items()
     ]
-    answered_marks = [question[NUMERIC_MARK] for question in item.fiche if question[NUMERIC_MARK] is not None]
+    answered_marks = [question[NUMERIC_MARK] for question in item.active_questions() if question[NUMERIC_MARK] is not None]
     return {
         "audit": item.showinfo(),
         "score": sum(answered_marks) / len(answered_marks) if answered_marks else None,
         "answered": len(answered_marks),
-        "total_questions": len(item.fiche),
+        "total_questions": len(item.active_questions()),
         "categories": categories,
-        "questions": item.fiche,
+        "questions": item.active_questions(),
     }
 
 
@@ -247,13 +247,13 @@ async def finished_audits(Authorize: AuthJWT = Depends(), access_token: str = Co
 @audit.get("/categories/{id}")
 async def categories(id: str, Authorize: AuthJWT = Depends(), access_token: str = Cookie(None)):
     item, _, _ = _authorized_audit(id, Authorize, access_token)
-    return list(dict.fromkeys(question[CATEGORY] for question in item.fiche))
+    return list(dict.fromkeys(question[CATEGORY] for question in item.active_questions()))
 
 
 @audit.get("/questions/{categorie}/{id}")
 def questions(categorie: str, id: str, Authorize: AuthJWT = Depends(), access_token: str = Cookie(None)):
     item, _, _ = _authorized_audit(id, Authorize, access_token)
-    return [question for question in item.fiche if question[CATEGORY].casefold() == categorie.casefold()]
+    return [question for question in item.active_questions() if question[CATEGORY].casefold() == categorie.casefold()]
 
 
 @audit.put("/audit/{id}/answers/{question_ref}")
@@ -266,6 +266,10 @@ async def save_answer(
 ):
     item, _, _ = _authorized_audit(id, Authorize, access_token)
     _ensure_editable(item)
+    if item.get_question(question_ref) is None:
+        raise HTTPException(status_code=404, detail="Question introuvable")
+    if not item.is_question_active(question_ref):
+        raise HTTPException(status_code=409, detail="Cette question est ignorée par les conditions du questionnaire")
     if not item.set_answer(question_ref, payload.mark, payload.comment):
         raise HTTPException(status_code=404, detail="Question introuvable")
     les_audits.update(item)
@@ -275,6 +279,10 @@ async def save_answer(
 async def set_mark(payload: schemas.setmark, Authorize: AuthJWT = Depends(), access_token: str = Cookie(None)):
     item, _, _ = _authorized_audit(payload.id, Authorize, access_token)
     _ensure_editable(item)
+    if item.get_question(payload.qst_ref) is None:
+        raise HTTPException(status_code=404, detail="Question introuvable")
+    if not item.is_question_active(payload.qst_ref):
+        raise HTTPException(status_code=409, detail="Cette question est ignorée par les conditions du questionnaire")
     item.set_mark(payload.qst_ref, payload.mark)
     les_audits.update(item)
     return {"message": f"Note attribuée : {payload.mark}"}
@@ -284,6 +292,10 @@ async def set_mark(payload: schemas.setmark, Authorize: AuthJWT = Depends(), acc
 async def set_comment(payload: schemas.comment, Authorize: AuthJWT = Depends(), access_token: str = Cookie(None)):
     item, _, _ = _authorized_audit(payload.id, Authorize, access_token)
     _ensure_editable(item)
+    if item.get_question(payload.qst_ref) is None:
+        raise HTTPException(status_code=404, detail="Question introuvable")
+    if not item.is_question_active(payload.qst_ref):
+        raise HTTPException(status_code=409, detail="Cette question est ignorée par les conditions du questionnaire")
     item.set_comment(payload.qst_ref, payload.comment)
     les_audits.update(item)
     return {"message": "Commentaire ajouté"}
