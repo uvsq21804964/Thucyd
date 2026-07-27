@@ -2,6 +2,8 @@ import asyncio
 import json
 import os
 import unittest
+from datetime import datetime, timezone
+from types import SimpleNamespace
 from uuid import uuid4
 
 from fastapi import HTTPException
@@ -10,7 +12,7 @@ os.environ.setdefault("DATABASE_URL", "postgresql+psycopg://test:test@localhost/
 os.environ.setdefault("INITIAL_ADMIN_PASSWORD", "test-admin-password")
 
 from app.interviews.tokens import create_session_token, extract_session_claims, tavus_context
-from app.routes.interviews import ChatMessage, _opening_greeting, _stream_response
+from app.routes.interviews import ChatMessage, _latest_capture, _opening_greeting, _stream_response
 
 
 class InterviewContractTests(unittest.TestCase):
@@ -41,6 +43,41 @@ class InterviewContractTests(unittest.TestCase):
         self.assertIn("20 questions", greeting)
         self.assertIn("enregistr", greeting)
         self.assertTrue(greeting.endswith("?"))
+
+    def test_latest_capture_only_exposes_recent_recorded_elements(self):
+        recorded_at = datetime.now(timezone.utc)
+        turns = [
+            SimpleNamespace(created_at=recorded_at, decision={"updates": []}),
+            SimpleNamespace(
+                created_at=recorded_at,
+                decision={
+                    "updates": [
+                        {
+                            "question_ref": 7,
+                            "answer_summary": "Une procédure est documentée.",
+                            "evidence": ["PROC-SSI-01", "Compte rendu annuel", "Ignorée"],
+                            "suggested_mark": 4,
+                            "mark_rationale": "4 : Politique validée — Le document est approuvé.",
+                            "confidence": 0.9,
+                        },
+                        {
+                            "question_ref": 8,
+                            "answer_summary": "Le contrôle reste à confirmer.",
+                            "evidence": [],
+                            "suggested_mark": 2,
+                            "confidence": 0.5,
+                        },
+                    ]
+                },
+            ),
+        ]
+        capture = _latest_capture(turns)
+        self.assertEqual(capture["recorded_at"], recorded_at)
+        self.assertEqual(capture["items"][0]["question_ref"], 7)
+        self.assertEqual(capture["items"][0]["evidence"], ["PROC-SSI-01", "Compte rendu annuel"])
+        self.assertEqual(capture["items"][0]["mark"], 4)
+        self.assertIn("Politique validée", capture["items"][0]["mark_rationale"])
+        self.assertIsNone(capture["items"][1]["mark"])
 
     def test_sse_stream_is_openai_compatible(self):
         async def collect():

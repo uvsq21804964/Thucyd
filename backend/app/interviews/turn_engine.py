@@ -30,6 +30,7 @@ CONTROL_COMMAND = re.compile(
     r"\[THUCYD_COMMAND:(repeat|rephrase|correct_previous)\]",
     flags=re.IGNORECASE,
 )
+MARKING_LEVEL_PATTERN = re.compile(r"^\s*(?P<mark>[0-4](?:[.,]\d+)?)\s*(?::|-|=)")
 
 
 def _clean_tavus_text(value: str) -> str:
@@ -130,6 +131,18 @@ def _fallback_decision(current_question: dict) -> InterviewDecision:
     )
 
 
+def _marking_criterion(marking_guide: list, mark: float) -> str | None:
+    for raw_criterion in marking_guide:
+        criterion = " ".join(str(raw_criterion).split())
+        match = MARKING_LEVEL_PATTERN.match(criterion)
+        if not match:
+            continue
+        criterion_mark = float(match.group("mark").replace(",", "."))
+        if abs(criterion_mark - float(mark)) < 0.001:
+            return criterion[:300]
+    return None
+
+
 def _validated_decision(
     decision: InterviewDecision | None,
     current_question: dict,
@@ -138,8 +151,25 @@ def _validated_decision(
     if decision is None or decision.question_ref != int(current_question["ref"]):
         return _fallback_decision(current_question)
 
-    allowed_refs = {int(question["ref"]) for question in candidates}
-    updates = [update for update in decision.updates if update.question_ref in allowed_refs]
+    candidates_by_ref = {int(question["ref"]): question for question in candidates}
+    updates = []
+    for update in decision.updates:
+        question = candidates_by_ref.get(update.question_ref)
+        if question is None:
+            continue
+        marking_guide = question.get("aide à la notation") or []
+        if update.suggested_mark is not None and marking_guide:
+            rationale = _clean_tavus_text(update.mark_rationale or "")
+            criterion = _marking_criterion(marking_guide, update.suggested_mark)
+            if not rationale or criterion is None:
+                update = update.model_copy(
+                    update={"suggested_mark": None, "mark_rationale": None}
+                )
+            else:
+                update = update.model_copy(
+                    update={"mark_rationale": f"{criterion} — {rationale}"[:500]}
+                )
+        updates.append(update)
     return decision.model_copy(update={"updates": updates})
 
 
@@ -157,10 +187,10 @@ def _safe_transition(text: str) -> str:
     return clean
 
 
-def _merge_result(question: dict, update: AnswerUpdate):
+def _merge_result(question: dict, update: AnswerUpdate) -> bool:
     summary = _clean_tavus_text(update.answer_summary)
     if not summary:
-        return
+        return False
     if update.evidence:
         evidence = "; ".join(
             clean
@@ -170,8 +200,15 @@ def _merge_result(question: dict, update: AnswerUpdate):
         if evidence:
             summary = f"{summary}\nPreuves mentionnées : {evidence}"
     question["comment"] = summary[:2000]
-    if update.suggested_mark is not None and update.confidence >= 0.7:
+    marking_guide = question.get("aide à la notation") or []
+    mark_is_justified = not marking_guide or bool(update.mark_rationale)
+    if (
+        update.suggested_mark is not None
+        and update.confidence >= 0.7
+        and mark_is_justified
+    ):
         question["note numérique"] = update.suggested_mark
+    return True
 
 
 def _next_uncovered_index(references: list[int], current_index: int, covered_refs: set[int]) -> int | None:
@@ -530,7 +567,8 @@ def process_turn(session_id: UUID, audit_id: UUID, messages: list) -> str:
             question = stored_by_ref.get(update.question_ref)
             if question is None:
                 continue
-            _merge_result(question, update)
+            if not _merge_result(question, update):
+                continue
             if update.confidence >= 0.6:
                 covered_refs.add(update.question_ref)
             applied_updates.append(update.model_dump())

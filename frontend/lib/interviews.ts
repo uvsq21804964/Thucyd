@@ -37,6 +37,17 @@ export type InterviewSessionDetails = {
     workstream: string;
   } | null;
   last_saved_at: string | null;
+  latest_capture: {
+    recorded_at: string;
+    items: {
+      question_ref: number;
+      summary: string;
+      evidence: string[];
+      mark: number | null;
+      mark_rationale: string | null;
+      confidence: number;
+    }[];
+  } | null;
   closing_notes: string[];
   tavus: TavusRoom | null;
   turns: InterviewTurn[];

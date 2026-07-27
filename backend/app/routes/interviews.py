@@ -38,6 +38,53 @@ def _opening_greeting(company_name: str, total_questions: int) -> str:
     )[:500]
 
 
+def _latest_capture(turns: list[InterviewTurnModel]) -> dict[str, Any] | None:
+    for turn in reversed(turns):
+        decision = turn.decision if isinstance(turn.decision, dict) else {}
+        updates = decision.get("updates")
+        if not isinstance(updates, list) or not updates:
+            continue
+        items = []
+        for update in updates[:2]:
+            if not isinstance(update, dict):
+                continue
+            summary = " ".join(str(update.get("answer_summary") or "").split())
+            if not summary:
+                continue
+            try:
+                question_ref = int(update["question_ref"])
+                confidence = min(1.0, max(0.0, float(update.get("confidence") or 0)))
+            except (KeyError, TypeError, ValueError):
+                continue
+            raw_evidence = update.get("evidence")
+            evidence = (
+                [
+                    " ".join(str(item).split())
+                    for item in raw_evidence[:2]
+                    if str(item).strip()
+                ]
+                if isinstance(raw_evidence, list)
+                else []
+            )
+            mark = update.get("suggested_mark") if confidence >= 0.7 else None
+            mark_rationale = " ".join(
+                str(update.get("mark_rationale") or "").split()
+            )
+            items.append(
+                {
+                    "question_ref": question_ref,
+                    "summary": summary[:500],
+                    "evidence": evidence,
+                    "mark": mark,
+                    "mark_rationale": mark_rationale[:500] if mark is not None else None,
+                    "confidence": confidence,
+                }
+            )
+        if items:
+            return {"recorded_at": turn.created_at, "items": items}
+    return None
+
+
 class ChatMessage(BaseModel):
     model_config = ConfigDict(extra="allow")
 
@@ -298,7 +345,7 @@ async def get_interview_session(
         turns = database.scalars(
             select(InterviewTurnModel)
             .where(InterviewTurnModel.session_id == parsed_session_id)
-            .order_by(InterviewTurnModel.turn_index)
+            .order_by(InterviewTurnModel.created_at)
         ).all()
         return {
             "session_id": session_id,
@@ -318,6 +365,7 @@ async def get_interview_session(
                 else None
             ),
             "last_saved_at": turns[-1].created_at if turns else None,
+            "latest_capture": _latest_capture(turns),
             "closing_notes": list(state.get("closing_notes") or []),
             "tavus": state.get("tavus"),
             "turns": [

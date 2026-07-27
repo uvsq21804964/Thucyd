@@ -1,16 +1,25 @@
 import os
 import unittest
+from unittest.mock import patch
 
 os.environ.setdefault("DATABASE_URL", "postgresql+psycopg://test:test@localhost/test")
 os.environ.setdefault("INITIAL_ADMIN_PASSWORD", "test-admin-password")
 
-from app.interviews.ai import AnswerUpdate, InterviewDecision, select_candidates
+from app.interviews.ai import (
+    AnswerUpdate,
+    InterviewDecision,
+    InterviewPlan,
+    InterviewUpdates,
+    make_decision,
+    select_candidates,
+)
 from app.interviews.turn_engine import (
     _closing_prompt,
     _detect_command,
     _is_close_confirmation,
     _is_ready_to_start,
     _last_user_text,
+    _marking_criterion,
     _merge_result,
     _next_uncovered_index,
     _recent_dialogue,
@@ -20,7 +29,7 @@ from app.interviews.turn_engine import (
 from app.routes.interviews import ChatMessage
 
 
-def question(reference, text, mark=None, comment=""):
+def question(reference, text, mark=None, comment="", marking_guide=None):
     return {
         "ref": reference,
         "catégorie": "Gouvernance",
@@ -28,7 +37,7 @@ def question(reference, text, mark=None, comment=""):
         "question": text,
         "comment": comment,
         "note numérique": mark,
-        "aide à la notation": [],
+        "aide à la notation": marking_guide or [],
     }
 
 
@@ -43,6 +52,41 @@ class InterviewDecisionTests(unittest.TestCase):
         ]
         selected = select_candidates(questions, 0, "Nous avons une procédure de gestion des incidents")
         self.assertIn(5, {item["ref"] for item in selected})
+
+    def test_spoken_plan_and_scoring_are_combined_from_parallel_tasks(self):
+        questions = [question(1, "Question précédente"), question(2, "Question courante")]
+        plan = InterviewPlan(
+            action="next_question",
+            question_ref=2,
+            reason="Réponse suffisante",
+            spoken_text="Merci pour cette précision.",
+        )
+        extracted = InterviewUpdates(
+            updates=[
+                AnswerUpdate(
+                    question_ref=2,
+                    answer_summary="Une procédure est documentée.",
+                    confidence=0.9,
+                )
+            ]
+        )
+        with (
+            patch("app.interviews.ai._client", return_value=object()),
+            patch("app.interviews.ai._make_plan", return_value=plan) as make_plan,
+            patch("app.interviews.ai._extract_updates", return_value=extracted) as extract,
+        ):
+            decision = make_decision(
+                current_question=questions[1],
+                candidates=questions,
+                transcript="Nous avons une procédure.",
+                followups_used=0,
+                recent_dialogue=[],
+            )
+
+        self.assertEqual(decision.question_ref, 2)
+        self.assertEqual(decision.updates[0].question_ref, 2)
+        self.assertEqual(make_plan.call_args.args[1]["current_question"]["ref"], 2)
+        self.assertEqual(extract.call_args.args[1]["current_question_ref"], 2)
 
     def test_unknown_question_updates_are_removed(self):
         current = question(1, "Question courante")
@@ -110,6 +154,54 @@ class InterviewDecisionTests(unittest.TestCase):
         self.assertEqual(first["note numérique"], 3)
         self.assertIn("Document SSI-01", first["comment"])
         self.assertEqual(second["note numérique"], 2)
+
+    def test_marking_guide_requires_an_exact_criterion_and_rationale(self):
+        guided = question(
+            1,
+            "Une politique est-elle formalisée ?",
+            marking_guide=["0 : Aucune politique", "2 : Politique en cours", "4 : Politique validée"],
+        )
+        unsupported = InterviewDecision(
+            action="next_question",
+            question_ref=1,
+            reason="Réponse suffisante",
+            spoken_text="Merci pour cette précision.",
+            updates=[
+                AnswerUpdate(
+                    question_ref=1,
+                    answer_summary="Une politique est en cours de rédaction.",
+                    suggested_mark=3,
+                    mark_rationale="La politique est partiellement formalisée.",
+                    confidence=0.9,
+                )
+            ],
+        )
+        validated = _validated_decision(unsupported, guided, [guided])
+        self.assertIsNone(validated.updates[0].suggested_mark)
+
+        supported = unsupported.model_copy(
+            update={
+                "updates": [
+                    unsupported.updates[0].model_copy(
+                        update={
+                            "suggested_mark": 2,
+                            "mark_rationale": "Le document est encore en cours de rédaction.",
+                        }
+                    )
+                ]
+            }
+        )
+        validated = _validated_decision(supported, guided, [guided])
+        self.assertEqual(validated.updates[0].suggested_mark, 2)
+        self.assertIn("2 : Politique en cours", validated.updates[0].mark_rationale)
+        _merge_result(guided, validated.updates[0])
+        self.assertEqual(guided["note numérique"], 2)
+
+    def test_marking_criterion_accepts_decimal_comma(self):
+        self.assertEqual(
+            _marking_criterion(["2,5 : Déploiement partiel"], 2.5),
+            "2,5 : Déploiement partiel",
+        )
 
     def test_metadata_is_never_saved_in_question_comment(self):
         target = question(1, "Question")

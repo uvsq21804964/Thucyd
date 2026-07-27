@@ -41,6 +41,12 @@ type AuditInfo = {
 
 type Phase = 'intro' | 'creating' | 'active' | 'ended' | 'error';
 
+function captureConfidenceLabel(confidence: number) {
+  if (confidence >= 0.8) return 'Fiabilité élevée';
+  if (confidence >= 0.6) return 'À confirmer';
+  return 'À vérifier';
+}
+
 export default function AIInterviewPage({
   params,
 }: {
@@ -149,6 +155,13 @@ export default function AIInterviewPage({
     closing: 'Récapitulatif et validation',
     completed: 'Entretien terminé',
   }[details?.stage ?? 'introduction'];
+  const captureTime = details?.latest_capture?.recorded_at
+    ? new Intl.DateTimeFormat('fr-FR', {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+      }).format(new Date(details.latest_capture.recorded_at))
+    : null;
   const activityText: Record<InterviewActivity, string> = {
     connecting: 'Connexion à la salle…',
     ready: 'Vous pouvez répondre',
@@ -391,29 +404,111 @@ export default function AIInterviewPage({
               )}
             </div>
 
-            {lastUtterance && (
-              <div className="surface-card p-5">
-                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                  {lastUtterance.role === 'user'
-                    ? 'Votre dernière intervention'
-                    : "Dernière réponse de l'auditeur"}
-                </p>
-                <p className="mt-2 line-clamp-4 text-sm leading-6 text-slate-700">
-                  {lastUtterance.text}
-                </p>
-              </div>
-            )}
-
             <div className="surface-card p-5">
-              <div className="flex items-center gap-2 text-sm font-semibold text-emerald-700">
-                <CheckCircle2 className="h-4 w-4" />
-                {details?.last_saved_at
-                  ? 'Dernier tour enregistré'
-                  : 'Sauvegarde automatique prête'}
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2 text-sm font-semibold text-slate-900">
+                  <Sparkles className="h-4 w-4 text-violet-600" />
+                  Ce qui est retenu
+                </div>
+                {activity === 'processing' && (
+                  <span className="flex items-center gap-1.5 text-[11px] font-medium text-violet-700">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    Analyse
+                  </span>
+                )}
+                {activity !== 'processing' && captureTime && (
+                  <span className="flex items-center gap-1 text-[11px] font-medium text-emerald-700">
+                    <CheckCircle2 className="h-3.5 w-3.5" />
+                    {captureTime}
+                  </span>
+                )}
               </div>
-              <p className="mt-2 text-xs leading-5 text-slate-500">
-                Les boutons sous la vidéo permettent de répéter, reformuler,
-                passer un point, corriger ou faire une pause.
+
+              {activity === 'processing' && (
+                <div className="mt-3 rounded-xl border border-violet-100 bg-violet-50/70 p-3">
+                  <p className="text-xs font-semibold text-violet-900">
+                    Structuration de votre réponse
+                  </p>
+                  {lastUtterance?.role === 'user' && (
+                    <p className="mt-1 line-clamp-2 text-xs leading-5 text-violet-800/70">
+                      « {lastUtterance.text} »
+                    </p>
+                  )}
+                  <div className="mt-3 grid grid-cols-2 gap-2 text-[10px] font-medium text-violet-700">
+                    <span className="flex items-center gap-1.5 rounded-lg bg-white/70 px-2 py-1.5">
+                      <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-violet-500" />
+                      Prochaine intervention
+                    </span>
+                    <span className="flex items-center gap-1.5 rounded-lg bg-white/70 px-2 py-1.5">
+                      <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-violet-500" />
+                      Synthèse et notation
+                    </span>
+                  </div>
+                  <p className="mt-2 text-[10px] text-violet-600/70">
+                    Ces deux analyses sont réalisées en parallèle.
+                  </p>
+                </div>
+              )}
+
+              {activity !== 'processing' && details?.latest_capture && (
+                <div className="mt-3 space-y-3">
+                  {details.latest_capture.items.map((item) => (
+                    <div
+                      key={`${details.latest_capture?.recorded_at}-${item.question_ref}`}
+                      className="rounded-xl border border-slate-100 bg-slate-50 p-3"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span className="text-[11px] font-semibold uppercase tracking-wide text-violet-700">
+                          Point {item.question_ref}
+                        </span>
+                        <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-medium text-slate-500 ring-1 ring-slate-200">
+                          {captureConfidenceLabel(item.confidence)}
+                        </span>
+                      </div>
+                      <p className="mt-2 line-clamp-3 text-xs leading-5 text-slate-700">
+                        {item.summary}
+                      </p>
+                      {(item.mark !== null || item.evidence.length > 0) && (
+                        <div className="mt-2 flex flex-wrap gap-2 text-[10px] font-medium">
+                          {item.mark !== null && (
+                            <span className="rounded-md bg-violet-100 px-2 py-1 text-violet-800">
+                              Note enregistrée : {item.mark}/4
+                            </span>
+                          )}
+                          {item.evidence.length > 0 && (
+                            <span className="rounded-md bg-emerald-100 px-2 py-1 text-emerald-800">
+                              {item.evidence.length} preuve
+                              {item.evidence.length > 1 ? 's' : ''} détectée
+                              {item.evidence.length > 1 ? 's' : ''}
+                            </span>
+                          )}
+                        </div>
+                      )}
+                      {item.mark_rationale && (
+                        <p className="mt-2 line-clamp-2 text-[11px] leading-4 text-violet-700">
+                          Notation : {item.mark_rationale}
+                        </p>
+                      )}
+                      {item.evidence[0] && (
+                        <p className="mt-1 line-clamp-1 text-[11px] text-slate-500">
+                          Preuve : {item.evidence[0]}
+                        </p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {activity !== 'processing' && !details?.latest_capture && (
+                <p className="mt-3 text-xs leading-5 text-slate-500">
+                  La synthèse enregistrée apparaîtra ici après votre première
+                  réponse.
+                </p>
+              )}
+
+              <p className="mt-3 border-t border-slate-100 pt-3 text-[11px] leading-4 text-slate-400">
+                Seuls les éléments effectivement écrits dans le questionnaire
+                sont affichés.
               </p>
             </div>
           </aside>
