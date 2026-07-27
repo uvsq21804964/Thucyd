@@ -85,6 +85,175 @@ def _latest_capture(turns: list[InterviewTurnModel]) -> dict[str, Any] | None:
     return None
 
 
+def _review_summary(
+    questions: list[dict],
+    turns: list[InterviewTurnModel],
+    references: list[int],
+) -> dict[str, Any]:
+    reference_set = set(references)
+    latest_updates: dict[int, dict] = {}
+    for turn in turns:
+        decision = turn.decision if isinstance(turn.decision, dict) else {}
+        updates = decision.get("updates")
+        if not isinstance(updates, list):
+            continue
+        for update in updates:
+            if not isinstance(update, dict):
+                continue
+            try:
+                reference = int(update["question_ref"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if reference in reference_set:
+                latest_updates[reference] = update
+
+    items = []
+    counts = {"ready": 0, "attention": 0, "unanswered": 0, "without_evidence": 0}
+    for question in questions:
+        try:
+            reference = int(question["ref"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if reference not in reference_set:
+            continue
+
+        comment = str(question.get("comment") or "").strip()
+        summary, _, comment_evidence = comment.partition("Preuves mentionnées :")
+        summary = " ".join(summary.split())
+        update = latest_updates.get(reference)
+        if update is not None:
+            update_summary = " ".join(str(update.get("answer_summary") or "").split())
+            if update_summary != summary:
+                update = None
+
+        evidence = []
+        confidence = None
+        mark_rationale = None
+        if update is not None:
+            raw_evidence = update.get("evidence")
+            if isinstance(raw_evidence, list):
+                evidence = [
+                    " ".join(str(value).split())
+                    for value in raw_evidence
+                    if str(value).strip()
+                ][:4]
+            try:
+                confidence = min(1.0, max(0.0, float(update.get("confidence"))))
+            except (TypeError, ValueError):
+                confidence = None
+            mark_rationale = " ".join(
+                str(update.get("mark_rationale") or "").split()
+            ) or None
+        elif comment_evidence.strip():
+            evidence = [
+                value.strip()
+                for value in comment_evidence.split(";")
+                if value.strip()
+            ][:4]
+
+        mark = question.get("note numérique")
+        marking_guide = question.get("aide à la notation") or []
+        reasons = []
+        if not summary:
+            status = "unanswered"
+            reasons.append("Aucune réponse enregistrée")
+        else:
+            if confidence is not None and confidence < 0.8:
+                reasons.append("Niveau de confiance à confirmer")
+            if mark is None:
+                reasons.append(
+                    "Note à valider selon l'aide à la notation"
+                    if marking_guide
+                    else "Note à compléter"
+                )
+            status = "attention" if reasons else "ready"
+
+        without_evidence = bool(summary) and not evidence
+        if without_evidence:
+            counts["without_evidence"] += 1
+        counts[status] += 1
+        items.append(
+            {
+                "question_ref": reference,
+                "category": str(question.get("catégorie") or ""),
+                "workstream": str(question.get("chantier") or ""),
+                "question": str(question.get("question") or ""),
+                "summary": summary,
+                "mark": mark,
+                "mark_rationale": mark_rationale,
+                "confidence": confidence,
+                "evidence": evidence,
+                "without_evidence": without_evidence,
+                "status": status,
+                "reasons": reasons,
+            }
+        )
+    counts["total"] = len(items)
+    return {"counts": counts, "items": items}
+
+
+def _session_details(
+    interview: InterviewSessionModel,
+    audit,
+    turns: list[InterviewTurnModel],
+) -> dict[str, Any]:
+    state = dict(interview.followups or {})
+    references = [int(reference) for reference in interview.question_refs]
+    covered_refs = {
+        int(reference)
+        for reference in state.get("covered_refs", [])
+        if int(reference) in references
+    }
+    current_reference = (
+        references[min(interview.current_index, len(references) - 1)]
+        if references
+        else None
+    )
+    current_question = next(
+        (
+            question
+            for question in audit.fiche
+            if current_reference is not None
+            and int(question.get("ref", -1)) == current_reference
+        ),
+        None,
+    )
+    return {
+        "session_id": str(interview.id),
+        "audit_id": str(interview.audit_id),
+        "company_name": audit.company_name,
+        "status": interview.status,
+        "current_index": interview.current_index,
+        "total_questions": len(references),
+        "answered_questions": len(covered_refs),
+        "stage": state.get("stage", "interview"),
+        "current_question": (
+            {
+                "ref": int(current_question["ref"]),
+                "category": str(current_question.get("catégorie") or ""),
+                "workstream": str(current_question.get("chantier") or ""),
+            }
+            if current_question is not None
+            else None
+        ),
+        "last_saved_at": turns[-1].created_at if turns else None,
+        "latest_capture": _latest_capture(turns),
+        "review": _review_summary(audit.fiche, turns, references),
+        "closing_notes": list(state.get("closing_notes") or []),
+        "tavus": state.get("tavus"),
+        "turns": [
+            {
+                "question_ref": turn.question_ref,
+                "transcript": turn.transcript,
+                "assistant_text": turn.assistant_text,
+                "decision": turn.decision,
+                "created_at": turn.created_at,
+            }
+            for turn in turns
+        ],
+    }
+
+
 class ChatMessage(BaseModel):
     model_config = ConfigDict(extra="allow")
 
@@ -315,71 +484,46 @@ async def get_interview_session(
     Authorize: AuthJWT = Depends(),
     access_token: str = Cookie(None),
 ):
-    parsed_session_id = UUID(session_id)
+    try:
+        parsed_session_id = UUID(session_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Identifiant de session invalide") from exc
     with SessionLocal() as database:
         interview = database.get(InterviewSessionModel, parsed_session_id)
         if interview is None:
             raise HTTPException(status_code=404, detail="Session d'entretien introuvable")
         audit, _, _ = _authorized_audit(str(interview.audit_id), Authorize, access_token)
-        state = dict(interview.followups or {})
-        references = [int(reference) for reference in interview.question_refs]
-        covered_refs = {
-            int(reference)
-            for reference in state.get("covered_refs", [])
-            if int(reference) in references
-        }
-        current_reference = (
-            references[min(interview.current_index, len(references) - 1)]
-            if references
-            else None
-        )
-        current_question = next(
-            (
-                question
-                for question in audit.fiche
-                if current_reference is not None
-                and int(question.get("ref", -1)) == current_reference
-            ),
-            None,
-        )
         turns = database.scalars(
             select(InterviewTurnModel)
             .where(InterviewTurnModel.session_id == parsed_session_id)
             .order_by(InterviewTurnModel.created_at)
         ).all()
-        return {
-            "session_id": session_id,
-            "audit_id": str(interview.audit_id),
-            "status": interview.status,
-            "current_index": interview.current_index,
-            "total_questions": len(interview.question_refs),
-            "answered_questions": len(covered_refs),
-            "stage": state.get("stage", "interview"),
-            "current_question": (
-                {
-                    "ref": int(current_question["ref"]),
-                    "category": str(current_question.get("catégorie") or ""),
-                    "workstream": str(current_question.get("chantier") or ""),
-                }
-                if current_question is not None
-                else None
-            ),
-            "last_saved_at": turns[-1].created_at if turns else None,
-            "latest_capture": _latest_capture(turns),
-            "closing_notes": list(state.get("closing_notes") or []),
-            "tavus": state.get("tavus"),
-            "turns": [
-                {
-                    "question_ref": turn.question_ref,
-                    "transcript": turn.transcript,
-                    "assistant_text": turn.assistant_text,
-                    "decision": turn.decision,
-                    "created_at": turn.created_at,
-                }
-                for turn in turns
-            ],
-        }
+        return _session_details(interview, audit, turns)
 
+
+@router.get("/audits/{audit_id}/interviews/latest")
+async def get_latest_interview_session(
+    audit_id: str,
+    Authorize: AuthJWT = Depends(),
+    access_token: str = Cookie(None),
+):
+    audit, _, _ = _authorized_audit(audit_id, Authorize, access_token)
+    parsed_audit_id = UUID(audit_id)
+    with SessionLocal() as database:
+        interview = database.scalar(
+            select(InterviewSessionModel)
+            .where(InterviewSessionModel.audit_id == parsed_audit_id)
+            .order_by(InterviewSessionModel.created_at.desc())
+            .limit(1)
+        )
+        if interview is None:
+            raise HTTPException(status_code=404, detail="Aucun entretien n'est disponible pour cet audit")
+        turns = database.scalars(
+            select(InterviewTurnModel)
+            .where(InterviewTurnModel.session_id == interview.id)
+            .order_by(InterviewTurnModel.created_at)
+        ).all()
+        return _session_details(interview, audit, turns)
 
 @router.post("/interviews/{session_id}/end")
 async def end_interview_session(

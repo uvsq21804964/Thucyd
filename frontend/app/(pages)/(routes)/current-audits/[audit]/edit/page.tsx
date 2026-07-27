@@ -19,7 +19,7 @@ type Gauge = { incomplete: number; 'total question': number };
 type QuestionData = { ref: string | number; catégorie: string; chantier: string; question: string; comment: string; 'note numérique': number | null; 'aide à la notation': string[] };
 type ApiError = { response?: { data?: { detail?: string | { incomplete?: number } } } };
 
-export default function Edit({ params }: { params: { audit: string } }) {
+export default function Edit({ params, searchParams }: { params: { audit: string }; searchParams: { category?: string; question?: string } }) {
   const router = useRouter();
   const [category, setCategory] = useState('');
   const [categories, setCategories] = useState<string[]>([]);
@@ -37,9 +37,9 @@ export default function Edit({ params }: { params: { audit: string } }) {
       API.get<string[]>(`categories/${params.audit}`), API.get<AuditInfo>(`audit/${params.audit}`),
       API.get<{ authenticated: boolean; user: CurrentUser }>('auth/me'), API.get<Gauge>(`completionGauge/${params.audit}`),
     ]).then(([categoriesResponse, auditResponse, userResponse, gaugeResponse]) => {
-      setCategories(categoriesResponse.data); setCategory(categoriesResponse.data[0] || ''); setAuditInfo(auditResponse.data); setUser(userResponse.data.user); setGauge(gaugeResponse.data);
+      const requestedCategory = searchParams?.category; setCategories(categoriesResponse.data); setCategory(requestedCategory && categoriesResponse.data.includes(requestedCategory) ? requestedCategory : categoriesResponse.data[0] || ''); setAuditInfo(auditResponse.data); setUser(userResponse.data.user); setGauge(gaugeResponse.data);
     }).catch(() => toast.error("Impossible de charger l'audit."));
-  }, [params.audit]);
+  }, [params.audit, searchParams?.category]);
 
   useEffect(() => {
     if (!category) return;
@@ -47,6 +47,16 @@ export default function Edit({ params }: { params: { audit: string } }) {
     API.get<QuestionData[]>(`questions/${encodeURIComponent(category)}/${params.audit}`)
       .then(({ data }) => setQuestions(data)).catch(() => toast.error('Impossible de charger cette catégorie.')).finally(() => setLoadingQuestions(false));
   }, [params.audit, category]);
+
+  useEffect(() => {
+    if (loadingQuestions || !searchParams?.question) return undefined;
+    const timer = window.setTimeout(() => {
+      document.getElementById(`question-${searchParams.question}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 100);
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [category, loadingQuestions, searchParams?.question]);
 
   const canClose = Boolean(user && auditInfo && (user.role === 0 || user.role === 1 || user.name.toLocaleLowerCase() === auditInfo.chef?.toLocaleLowerCase()));
   const categoryIndex = Math.max(categories.indexOf(category), 0);
@@ -83,6 +93,7 @@ export default function Edit({ params }: { params: { audit: string } }) {
           <div><p className="text-sm font-semibold text-violet-700">Questionnaire d’audit</p><h1 className="page-heading mt-1">{auditInfo?.companie || 'Chargement…'}</h1><p className="page-subtitle">{category || 'Préparation des catégories'}</p></div>
           <div className="flex items-center gap-3">
             {!auditInfo?.finished && <Button asChild type="button" variant="outline" className="rounded-xl bg-white"><Link href={`/current-audits/${params.audit}/interview`}><Video className="mr-2 h-4 w-4 text-violet-700" />Entretien IA</Link></Button>}
+            <Button asChild type="button" variant="outline" className="rounded-xl bg-white"><Link href={`/current-audits/${params.audit}/interview/review`}><ListFilter className="mr-2 h-4 w-4 text-violet-700" />Revue IA</Link></Button>
             {canClose && !auditInfo?.finished && (confirmClosing ? <div className="flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 p-2"><span className="hidden text-xs text-amber-900 lg:inline">Clôturer définitivement ?</span><Button type="button" size="sm" variant="outline" disabled={closing} onClick={() => setConfirmClosing(false)}>Annuler</Button><Button type="button" size="sm" disabled={closing} onClick={completeAudit}>{closing && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}Confirmer</Button></div> : <Button type="button" onClick={() => { if (gauge?.incomplete) { setOnlyIncomplete(true); toast.error(`${gauge.incomplete} question(s) restent à noter avant la clôture.`); } else setConfirmClosing(true); }} className="rounded-xl bg-emerald-600 hover:bg-emerald-700"><CheckCircle2 className="mr-2 h-4 w-4" />Clôturer</Button>)}
           </div>
         </div>

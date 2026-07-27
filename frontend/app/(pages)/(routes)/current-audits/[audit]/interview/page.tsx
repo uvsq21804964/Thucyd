@@ -144,6 +144,7 @@ export default function AIInterviewPage({
     setLastUtterance(utterance);
   }, []);
   const editUrl = `/current-audits/${params.audit}/edit`;
+  const reviewUrl = `/current-audits/${params.audit}/interview/review`;
   const answeredQuestions = details?.answered_questions ?? 0;
   const totalQuestions = details?.total_questions ?? 0;
   const completion = totalQuestions
@@ -549,10 +550,12 @@ export default function AIInterviewPage({
             </div>
             <div className="mt-6 flex flex-wrap justify-center gap-3">
               <Button asChild className="rounded-xl">
-                <Link href={editUrl}>Vérifier les réponses</Link>
+                <Link href={`${reviewUrl}?session=${session?.session_id}`}>
+                  Ouvrir la revue
+                </Link>
               </Button>
               <Button asChild variant="outline" className="rounded-xl">
-                <Link href="/current-audits">Retour aux audits</Link>
+                <Link href={editUrl}>Vérifier le questionnaire</Link>
               </Button>
             </div>
           </div>

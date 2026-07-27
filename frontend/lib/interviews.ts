@@ -23,9 +23,36 @@ export type InterviewTurn = {
   created_at: string;
 };
 
+export type InterviewReviewItem = {
+  question_ref: number;
+  category: string;
+  workstream: string;
+  question: string;
+  summary: string;
+  mark: number | null;
+  mark_rationale: string | null;
+  confidence: number | null;
+  evidence: string[];
+  without_evidence: boolean;
+  status: 'ready' | 'attention' | 'unanswered';
+  reasons: string[];
+};
+
+export type InterviewReview = {
+  counts: {
+    total: number;
+    ready: number;
+    attention: number;
+    unanswered: number;
+    without_evidence: number;
+  };
+  items: InterviewReviewItem[];
+};
+
 export type InterviewSessionDetails = {
   session_id: string;
   audit_id: string;
+  company_name: string;
   status: string;
   current_index: number;
   total_questions: number;
@@ -37,6 +64,7 @@ export type InterviewSessionDetails = {
     workstream: string;
   } | null;
   last_saved_at: string | null;
+  review: InterviewReview;
   latest_capture: {
     recorded_at: string;
     items: {
@@ -72,6 +100,13 @@ export async function endInterviewSession(sessionId: string) {
 export async function getInterviewSession(sessionId: string) {
   const response = await API.get<InterviewSessionDetails>(
     `interviews/${sessionId}`
+  );
+  return response.data;
+}
+
+export async function getLatestInterviewSession(auditId: string) {
+  const response = await API.get<InterviewSessionDetails>(
+    `audits/${auditId}/interviews/latest`
   );
   return response.data;
 }

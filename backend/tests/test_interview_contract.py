@@ -12,7 +12,13 @@ os.environ.setdefault("DATABASE_URL", "postgresql+psycopg://test:test@localhost/
 os.environ.setdefault("INITIAL_ADMIN_PASSWORD", "test-admin-password")
 
 from app.interviews.tokens import create_session_token, extract_session_claims, tavus_context
-from app.routes.interviews import ChatMessage, _latest_capture, _opening_greeting, _stream_response
+from app.routes.interviews import (
+    ChatMessage,
+    _latest_capture,
+    _opening_greeting,
+    _review_summary,
+    _stream_response,
+)
 
 
 class InterviewContractTests(unittest.TestCase):
@@ -78,6 +84,114 @@ class InterviewContractTests(unittest.TestCase):
         self.assertEqual(capture["items"][0]["mark"], 4)
         self.assertIn("Politique validée", capture["items"][0]["mark_rationale"])
         self.assertIsNone(capture["items"][1]["mark"])
+
+    def test_review_summary_identifies_points_to_validate(self):
+        turns = [
+            SimpleNamespace(
+                decision={
+                    "updates": [
+                        {
+                            "question_ref": 1,
+                            "answer_summary": "Une politique est documentée.",
+                            "evidence": ["POL-01"],
+                            "suggested_mark": 4,
+                            "mark_rationale": "4 : politique validée et diffusée.",
+                            "confidence": 0.92,
+                        },
+                        {
+                            "question_ref": 2,
+                            "answer_summary": "Le contrôle reste informel.",
+                            "evidence": [],
+                            "suggested_mark": None,
+                            "mark_rationale": None,
+                            "confidence": 0.55,
+                        },
+                    ]
+                }
+            )
+        ]
+        questions = [
+            {
+                "ref": 1,
+                "catégorie": "Gouvernance",
+                "chantier": "Politiques",
+                "question": "La politique est-elle formalisée ?",
+                "comment": "Une politique est documentée. Preuves mentionnées : POL-01",
+                "note numérique": 4,
+                "aide à la notation": ["0 : non", "4 : oui"],
+            },
+            {
+                "ref": 2,
+                "catégorie": "Gouvernance",
+                "chantier": "Contrôles",
+                "question": "Le contrôle est-il revu ?",
+                "comment": "Le contrôle reste informel.",
+                "note numérique": None,
+                "aide à la notation": ["0 : jamais", "4 : annuellement"],
+            },
+            {
+                "ref": 3,
+                "catégorie": "Technique",
+                "chantier": "Sauvegardes",
+                "question": "Les restaurations sont-elles testées ?",
+                "comment": "",
+                "note numérique": None,
+                "aide à la notation": [],
+            },
+        ]
+
+        review = _review_summary(questions, turns, [1, 2, 3])
+
+        self.assertEqual(
+            review["counts"],
+            {
+                "ready": 1,
+                "attention": 1,
+                "unanswered": 1,
+                "without_evidence": 1,
+                "total": 3,
+            },
+        )
+        self.assertEqual(review["items"][0]["evidence"], ["POL-01"])
+        self.assertIn("confiance", review["items"][1]["reasons"][0])
+        self.assertIn("notation", review["items"][1]["reasons"][1])
+
+    def test_review_summary_discards_stale_ai_metadata_after_manual_edit(self):
+        turns = [
+            SimpleNamespace(
+                decision={
+                    "updates": [
+                        {
+                            "question_ref": 1,
+                            "answer_summary": "Ancienne synthèse.",
+                            "evidence": ["ANCIENNE-PREUVE"],
+                            "suggested_mark": 2,
+                            "mark_rationale": "Ancienne justification.",
+                            "confidence": 0.4,
+                        }
+                    ]
+                }
+            )
+        ]
+        questions = [
+            {
+                "ref": 1,
+                "catégorie": "Gouvernance",
+                "chantier": "Politiques",
+                "question": "La politique est-elle formalisée ?",
+                "comment": "Synthèse corrigée manuellement.",
+                "note numérique": 4,
+                "aide à la notation": ["0 : non", "4 : oui"],
+            }
+        ]
+
+        item = _review_summary(questions, turns, [1])["items"][0]
+
+        self.assertEqual(item["summary"], "Synthèse corrigée manuellement.")
+        self.assertIsNone(item["confidence"])
+        self.assertIsNone(item["mark_rationale"])
+        self.assertEqual(item["evidence"], [])
+        self.assertEqual(item["status"], "ready")
 
     def test_sse_stream_is_openai_compatible(self):
         async def collect():

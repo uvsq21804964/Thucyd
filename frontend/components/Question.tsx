@@ -132,7 +132,7 @@ export default function Question({ question, nb, parametre, onChange, onSaved }:
   const StatusIcon = status.icon;
 
   return (
-    <Card className="overflow-hidden rounded-2xl border-slate-200 shadow-sm">
+    <Card id={`question-${question.ref}`} className="scroll-mt-24 overflow-hidden rounded-2xl border-slate-200 shadow-sm target:ring-2 target:ring-violet-400">
       <CardHeader className="border-b border-slate-100 bg-slate-50/70 p-5">
         <div className="flex items-start gap-3"><span className="flex h-8 min-w-8 items-center justify-center rounded-lg bg-violet-100 text-sm font-bold text-violet-700">{nb + 1}</span><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center justify-between gap-2"><p className="text-xs font-semibold uppercase tracking-wide text-violet-700">{question.chantier}</p><span className={cn('flex items-center gap-1.5 text-xs font-medium', status.className)} aria-live="polite"><StatusIcon className={cn('h-3.5 w-3.5', saveState === 'saving' && 'animate-pulse')} />{status.label}</span></div><h2 className="mt-1 text-base font-semibold leading-6 text-slate-950">{question.question}</h2></div></div>
       </CardHeader>
