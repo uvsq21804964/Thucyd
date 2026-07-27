@@ -6,10 +6,14 @@ os.environ.setdefault("INITIAL_ADMIN_PASSWORD", "test-admin-password")
 
 from app.interviews.ai import AnswerUpdate, InterviewDecision, select_candidates
 from app.interviews.turn_engine import (
+    _last_user_text,
     _merge_result,
     _next_uncovered_index,
+    _recent_dialogue,
+    _safe_transition,
     _validated_decision,
 )
+from app.routes.interviews import ChatMessage
 
 
 def question(reference, text, mark=None, comment=""):
@@ -51,8 +55,33 @@ class InterviewDecisionTests(unittest.TestCase):
                 )
             ],
         )
-        validated = _validated_decision(decision, current, [current], "Réponse réelle")
-        self.assertEqual([update.question_ref for update in validated.updates], [1])
+        validated = _validated_decision(decision, current, [current])
+        self.assertEqual(validated.updates, [])
+
+    def test_tavus_analysis_is_removed_from_transcript_and_history(self):
+        messages = [
+            ChatMessage(role="assistant", content="Qui pilote la sécurité ?"),
+            ChatMessage(
+                role="user",
+                content=(
+                    "<user_audio_analysis>The emotions are neutral.</user_audio_analysis> "
+                    "On a uniquement un DSI."
+                ),
+            ),
+        ]
+        self.assertEqual(_last_user_text(messages), "On a uniquement un DSI.")
+        self.assertEqual(
+            _recent_dialogue(messages)[-1]["content"],
+            "On a uniquement un DSI.",
+        )
+
+    def test_transition_rejects_metadata_and_questions(self):
+        self.assertEqual(
+            _safe_transition(
+                "<user_audio_analysis>neutral</user_audio_analysis> Et ensuite ?"
+            ),
+            "Merci pour ces éléments. Passons au point suivant.",
+        )
 
     def test_multiple_question_results_are_merged_live(self):
         first = question(1, "Question 1")
@@ -77,6 +106,24 @@ class InterviewDecisionTests(unittest.TestCase):
         self.assertEqual(first["note numérique"], 3)
         self.assertIn("Document SSI-01", first["comment"])
         self.assertEqual(second["note numérique"], 2)
+
+    def test_metadata_is_never_saved_in_question_comment(self):
+        target = question(1, "Question")
+        _merge_result(
+            target,
+            AnswerUpdate(
+                question_ref=1,
+                answer_summary=(
+                    "<user_audio_analysis>The emotions are neutral.</user_audio_analysis> "
+                    "L'organisation indique que seul le DSI assume cette responsabilité."
+                ),
+                confidence=0.9,
+            ),
+        )
+        self.assertEqual(
+            target["comment"],
+            "L'organisation indique que seul le DSI assume cette responsabilité.",
+        )
 
     def test_low_confidence_mark_is_not_committed(self):
         target = question(1, "Question")

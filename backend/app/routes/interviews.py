@@ -180,6 +180,8 @@ async def create_interview_session(
         raise HTTPException(status_code=503, detail="TAVUS_API_KEY n'est pas configurée")
     if not settings.TAVUS_PERSONA_ID:
         raise HTTPException(status_code=503, detail="TAVUS_PERSONA_ID n'est pas configuré")
+    if not settings.OPENAI_API_KEY:
+        raise HTTPException(status_code=503, detail="OPENAI_API_KEY n'est pas configurée")
 
     parsed_audit_id = UUID(audit_id)
     custom_greeting = str(audit.fiche[0]["question"]).strip()

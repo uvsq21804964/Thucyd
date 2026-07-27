@@ -1,5 +1,6 @@
 import hashlib
 import json
+import re
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -15,10 +16,24 @@ CLOSING_TEXT = (
     "Merci pour vos réponses. L'entretien est maintenant terminé. "
     "Un auditeur examinera les éléments recueillis."
 )
+TAVUS_ANALYSIS_BLOCK = re.compile(
+    r"<(?P<tag>[\w:-]*analysis)\b[^>]*>.*?</(?P=tag)\s*>",
+    flags=re.IGNORECASE | re.DOTALL,
+)
+
+
+def _clean_tavus_text(value: str) -> str:
+    clean = TAVUS_ANALYSIS_BLOCK.sub(" ", value)
+    return " ".join(clean.split())
+
+
+def _message_text(message) -> str:
+    text = message.text_content()
+    return _clean_tavus_text(text) if message.role == "user" else " ".join(text.split())
 
 
 def _history_hash(messages: list) -> str:
-    serialized = [{"role": message.role, "content": message.text_content()} for message in messages]
+    serialized = [{"role": message.role, "content": _message_text(message)} for message in messages]
     return hashlib.sha256(
         json.dumps(serialized, ensure_ascii=False, sort_keys=True).encode("utf-8")
     ).hexdigest()
@@ -27,25 +42,28 @@ def _history_hash(messages: list) -> str:
 def _last_user_text(messages: list) -> str:
     for message in reversed(messages):
         if message.role == "user":
-            return message.text_content().strip()
+            return _clean_tavus_text(message.text_content())
     return ""
 
 
-def _fallback_decision(current_question: dict, transcript: str) -> InterviewDecision:
+def _recent_dialogue(messages: list, limit: int = 8) -> list[dict[str, str]]:
+    dialogue = []
+    for message in messages:
+        if message.role not in {"user", "assistant"}:
+            continue
+        content = _message_text(message)
+        if content:
+            dialogue.append({"role": message.role, "content": content[:2000]})
+    return dialogue[-limit:]
+
+
+def _fallback_decision(current_question: dict) -> InterviewDecision:
     return InterviewDecision(
         action="next_question",
         question_ref=int(current_question["ref"]),
         reason="Mode déterministe ou décision IA indisponible.",
-        spoken_text="Question suivante.",
-        updates=[
-            AnswerUpdate(
-                question_ref=int(current_question["ref"]),
-                answer_summary=transcript[:1500],
-                evidence=[],
-                suggested_mark=None,
-                confidence=1,
-            )
-        ],
+        spoken_text="Merci pour ces éléments. Passons au point suivant.",
+        updates=[],
     )
 
 
@@ -53,37 +71,39 @@ def _validated_decision(
     decision: InterviewDecision | None,
     current_question: dict,
     candidates: list[dict],
-    transcript: str,
 ) -> InterviewDecision:
     if decision is None or decision.question_ref != int(current_question["ref"]):
-        return _fallback_decision(current_question, transcript)
+        return _fallback_decision(current_question)
 
     allowed_refs = {int(question["ref"]) for question in candidates}
     updates = [update for update in decision.updates if update.question_ref in allowed_refs]
-    if int(current_question["ref"]) not in {update.question_ref for update in updates}:
-        updates.append(
-            AnswerUpdate(
-                question_ref=int(current_question["ref"]),
-                answer_summary=transcript[:1500],
-                evidence=[],
-                suggested_mark=None,
-                confidence=0.5,
-            )
-        )
     return decision.model_copy(update={"updates": updates})
 
 
 def _safe_followup(text: str) -> str:
-    clean = " ".join(text.split())
+    clean = _clean_tavus_text(text)
     if not clean or len(clean) > 300 or clean.count("?") != 1 or "<" in clean or ">" in clean:
         return "Pouvez-vous préciser votre réponse avec un exemple ou une preuve concrète ?"
     return clean
 
 
+def _safe_transition(text: str) -> str:
+    clean = _clean_tavus_text(text)
+    if not clean or len(clean) > 240 or "?" in clean or "<" in clean or ">" in clean:
+        return "Merci pour ces éléments. Passons au point suivant."
+    return clean
+
+
 def _merge_result(question: dict, update: AnswerUpdate):
-    summary = update.answer_summary.strip()
+    summary = _clean_tavus_text(update.answer_summary)
+    if not summary:
+        return
     if update.evidence:
-        evidence = "; ".join(item.strip() for item in update.evidence if item.strip())
+        evidence = "; ".join(
+            clean
+            for item in update.evidence
+            if (clean := _clean_tavus_text(item))
+        )
         if evidence:
             summary = f"{summary}\nPreuves mentionnées : {evidence}"
     question["comment"] = summary[:2000]
@@ -101,6 +121,7 @@ def _next_uncovered_index(references: list[int], current_index: int, covered_ref
 def process_turn(session_id: UUID, audit_id: UUID, messages: list) -> str:
     input_hash = _history_hash(messages)
     transcript = _last_user_text(messages)
+    recent_dialogue = _recent_dialogue(messages)
 
     with SessionLocal() as database:
         interview_snapshot = database.get(InterviewSessionModel, session_id)
@@ -136,8 +157,9 @@ def process_turn(session_id: UUID, audit_id: UUID, messages: list) -> str:
         candidates=candidates,
         transcript=transcript[:20_000],
         followups_used=int(followups.get(str(current_reference), 0)),
+        recent_dialogue=recent_dialogue,
     )
-    decision = _validated_decision(ai_decision, current_question, candidates, transcript)
+    decision = _validated_decision(ai_decision, current_question, candidates)
 
     with session_scope() as database:
         interview = database.scalar(
@@ -204,7 +226,8 @@ def process_turn(session_id: UUID, audit_id: UUID, messages: list) -> str:
                 next_question = stored_by_ref.get(references[next_index])
                 if next_question is None:
                     raise HTTPException(status_code=409, detail="Question suivante introuvable")
-                assistant_text = str(next_question["question"]).strip()
+                transition = _safe_transition(decision.spoken_text)
+                assistant_text = f"{transition} {str(next_question['question']).strip()}"
                 action = "next_question"
 
         audit.questionnaire = stored_questions
