@@ -156,6 +156,32 @@ class InterviewContractTests(unittest.TestCase):
         self.assertIn("confiance", review["items"][1]["reasons"][0])
         self.assertIn("notation", review["items"][1]["reasons"][1])
 
+    def test_review_summary_uses_validated_document_evidence(self):
+        questions = [{
+            "ref": 1,
+            "catégorie": "Gouvernance",
+            "chantier": "Politiques",
+            "question": "La politique est-elle formalisée ?",
+            "comment": "La politique est formalisée.",
+            "note numérique": 4,
+            "aide à la notation": ["4 : oui"],
+        }]
+
+        pending = _review_summary(
+            questions, [], [1],
+            {1: [{"filename": "politique.pdf", "status": "pending"}]},
+        )["items"][0]
+        self.assertEqual(pending["status"], "attention")
+        self.assertTrue(pending["without_evidence"])
+        self.assertIn("valider", pending["reasons"][0])
+
+        validated = _review_summary(
+            questions, [], [1],
+            {1: [{"filename": "politique.pdf", "status": "validated"}]},
+        )["items"][0]
+        self.assertEqual(validated["status"], "ready")
+        self.assertFalse(validated["without_evidence"])
+        self.assertEqual(validated["evidence"], ["Document : politique.pdf"])
     def test_review_summary_discards_stale_ai_metadata_after_manual_edit(self):
         turns = [
             SimpleNamespace(

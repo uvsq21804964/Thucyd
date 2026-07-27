@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { ArrowLeft, CalendarDays, ClipboardList, Download, User } from 'lucide-react';
+import { ArrowLeft, CalendarDays, ClipboardList, Download, Paperclip, User } from 'lucide-react';
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -29,6 +29,18 @@ type AuditQuestion = {
   'note numérique': number | null;
 };
 
+type EvidenceMetadata = {
+  id: string;
+  question_ref: number;
+  filename: string;
+  status: 'pending' | 'validated' | 'rejected';
+};
+const evidenceStatus = {
+  pending: { label: 'À valider', className: 'border-amber-200 bg-amber-50 text-amber-700' },
+  validated: { label: 'Validée', className: 'border-emerald-200 bg-emerald-50 text-emerald-700' },
+  rejected: { label: 'Refusée', className: 'border-red-200 bg-red-50 text-red-700' },
+};
+
 type CategoryResult = {
   name: string;
   score: number | null;
@@ -43,6 +55,7 @@ type AuditResults = {
   total_questions: number;
   categories: CategoryResult[];
   questions: AuditQuestion[];
+  evidence?: EvidenceMetadata[];
 };
 
 const formatScore = (score: number | null) => (score === null ? '—' : `${score.toFixed(2)} / 4`);
@@ -144,6 +157,7 @@ export default function Results({ params }: { params: { idAudit: string } }) {
                 <Badge variant="outline">{formatScore(question['note numérique'])}</Badge>
               </div>
               <p className="mt-3 text-sm text-slate-600"><span className="font-medium">Commentaire :</span> {question.comment || 'Aucun commentaire'}</p>
+              {(results.evidence ?? []).some((item) => item.question_ref === question.ref) && <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-slate-100 pt-3 print:hidden"><span className="flex items-center gap-1 text-xs font-semibold text-slate-600"><Paperclip className="h-3.5 w-3.5 text-violet-600" />Preuves</span>{(results.evidence ?? []).filter((item) => item.question_ref === question.ref).map((item) => <a key={item.id} href={`/backend/evidence/${item.id}/download`} className={`inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-xs font-medium ${evidenceStatus[item.status].className}`}><Download className="h-3 w-3" />{item.filename} · {evidenceStatus[item.status].label}</a>)}</div>}
             </article>
           ))}
         </section>

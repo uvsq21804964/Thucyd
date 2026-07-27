@@ -9,6 +9,7 @@ import { AlertCircle, BookOpen, Check, Cloud } from 'lucide-react';
 import { useForm } from 'react-hook-form';
 import * as z from 'zod';
 
+import EvidencePanel from '@/components/EvidencePanel';
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
 import { Textarea } from '@/components/ui/textarea';
 import API from '@/lib/api-client';
@@ -140,6 +141,8 @@ export default function Question({ question, nb, parametre, onChange, onSaved }:
         <fieldset><legend className="text-sm font-semibold text-slate-800">Niveau de conformité</legend><p className="mt-1 text-xs text-slate-500">0 = non conforme · 4 = totalement maîtrisé</p><div className="mt-3 grid grid-cols-5 gap-2">{[0, 1, 2, 3, 4].map((score) => <button key={score} type="button" onClick={() => form.setValue('note', String(score), { shouldValidate: true, shouldDirty: true })} className={cn('h-11 rounded-xl border text-sm font-bold transition', selectedNote === String(score) ? 'border-violet-600 bg-violet-600 text-white shadow-sm' : 'border-slate-200 bg-white text-slate-600 hover:border-violet-300 hover:bg-violet-50')} aria-pressed={selectedNote === String(score)}>{score}</button>)}</div>{form.formState.errors.note && <p className="mt-2 text-sm text-red-600">{form.formState.errors.note.message}</p>}</fieldset>
 
         <div><div className="flex items-center justify-between"><label htmlFor={`comment-${question.ref}`} className="text-sm font-semibold text-slate-800">Commentaire</label><span className="text-xs text-slate-400">{comment.length}/1000</span></div><Textarea id={`comment-${question.ref}`} rows={4} maxLength={1000} placeholder="Justifiez la note avec des faits, preuves ou observations…" {...form.register('commentaire')} className="mt-2 resize-y rounded-xl border-slate-300 text-sm focus-visible:ring-violet-500" />{form.formState.errors.commentaire && <p className="mt-2 text-sm text-red-600">{form.formState.errors.commentaire.message}</p>}</div>
+
+        <EvidencePanel auditId={parametre} questionRef={question.ref} />
 
         {question['aide à la notation']?.length > 0 && <details className="group rounded-xl border border-slate-200 bg-slate-50 p-4"><summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-medium text-slate-700"><BookOpen className="h-4 w-4 text-violet-600" />Afficher l’aide à la notation</summary><div className="mt-3 space-y-2 border-t border-slate-200 pt-3">{question['aide à la notation'].filter((item) => !item.startsWith('--')).map((item) => <p key={item} className="text-xs leading-5 text-slate-600">{item}</p>)}</div></details>}
       </CardContent>

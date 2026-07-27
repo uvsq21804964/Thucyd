@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.database import engine, init_database
-from app.routes import GestionAudit, action_plan, authentification, interviews
+from app.routes import GestionAudit, action_plan, authentification, evidence, interviews
 from app.settings import settings
 
 
@@ -31,6 +31,7 @@ app.add_middleware(
 app.include_router(GestionAudit.audit)
 app.include_router(action_plan.router)
 app.include_router(authentification.user)
+app.include_router(evidence.router)
 app.include_router(interviews.router)
 
 

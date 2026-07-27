@@ -1,11 +1,13 @@
 from datetime import datetime
+from uuid import UUID
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, status
+from sqlalchemy import func, select
 
 from app import schemas
 from app.AuditDao.audit import CATEGORY, NUMERIC_MARK
 from app.AuditDao.openaudits import OpenAudits
-from app.database import get_user_by_id
+from app.database import EvidenceModel, SessionLocal, get_user_by_id
 from app.get_user_role import UserRole, user_role
 from app.oauth2 import AuthJWT
 
@@ -102,6 +104,17 @@ async def complete_audit(id: str, Authorize: AuthJWT = Depends(), access_token: 
                 **completion,
             },
         )
+    with SessionLocal() as session:
+        pending_evidence = session.scalar(
+            select(func.count()).select_from(EvidenceModel).where(
+                EvidenceModel.audit_id == UUID(id), EvidenceModel.status == "pending"
+            )
+        )
+    if pending_evidence:
+        raise HTTPException(
+            status_code=409,
+            detail=f"{pending_evidence} preuve(s) documentaire(s) restent à valider avant la clôture.",
+        )
     item.confirmer_terminer()
     les_audits.update(item)
     return {"message": "Audit termine", "audit": item.showinfo()}
@@ -137,10 +150,43 @@ def _build_audit_results(item):
     }
 
 
+def _evidence_metadata(audit_id: str):
+    with SessionLocal() as session:
+        rows = session.execute(
+            select(
+                EvidenceModel.id,
+                EvidenceModel.question_ref,
+                EvidenceModel.filename,
+                EvidenceModel.size,
+                EvidenceModel.status,
+                EvidenceModel.uploaded_by,
+                EvidenceModel.uploaded_at,
+                EvidenceModel.reviewed_by,
+                EvidenceModel.reviewed_at,
+            ).where(EvidenceModel.audit_id == UUID(audit_id))
+        ).all()
+    return [
+        {
+            "id": str(row.id),
+            "question_ref": row.question_ref,
+            "filename": row.filename,
+            "size": row.size,
+            "status": row.status,
+            "uploaded_by": row.uploaded_by,
+            "uploaded_at": row.uploaded_at,
+            "reviewed_by": row.reviewed_by,
+            "reviewed_at": row.reviewed_at,
+        }
+        for row in rows
+    ]
+
+
 @audit.get("/audit/{id}/results")
 async def audit_results(id: str, Authorize: AuthJWT = Depends(), access_token: str = Cookie(None)):
     item, _, _ = _authorized_audit(id, Authorize, access_token)
-    return _build_audit_results(item)
+    results = _build_audit_results(item)
+    results["evidence"] = _evidence_metadata(id)
+    return results
 
 @audit.get("/audit/{id}")
 async def get_audit(id: str, Authorize: AuthJWT = Depends(), access_token: str = Cookie(None)):

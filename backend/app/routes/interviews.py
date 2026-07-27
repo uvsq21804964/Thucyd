@@ -10,7 +10,7 @@ from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
-from app.database import SessionLocal, session_scope
+from app.database import EvidenceModel, SessionLocal, session_scope
 from app.interviews.turn_engine import process_turn
 from app.interviews.models import InterviewSessionModel, InterviewTurnModel
 from app.interviews.tavus import (
@@ -89,6 +89,7 @@ def _review_summary(
     questions: list[dict],
     turns: list[InterviewTurnModel],
     references: list[int],
+    document_evidence: dict[int, list[dict]] | None = None,
 ) -> dict[str, Any]:
     reference_set = set(references)
     latest_updates: dict[int, dict] = {}
@@ -151,6 +152,23 @@ def _review_summary(
                 if value.strip()
             ][:4]
 
+        documents = (document_evidence or {}).get(reference, [])
+        validated_documents = [
+            document["filename"]
+            for document in documents
+            if document["status"] == "validated"
+        ]
+        for filename in validated_documents:
+            label = f"Document : {filename}"
+            if label not in evidence:
+                evidence.append(label)
+        has_pending_document = any(
+            document["status"] == "pending" for document in documents
+        )
+        has_rejected_document = any(
+            document["status"] == "rejected" for document in documents
+        )
+
         mark = question.get("note numérique")
         marking_guide = question.get("aide à la notation") or []
         reasons = []
@@ -166,6 +184,10 @@ def _review_summary(
                     if marking_guide
                     else "Note à compléter"
                 )
+            if has_pending_document:
+                reasons.append("Preuve documentaire à valider")
+            elif has_rejected_document and not validated_documents:
+                reasons.append("Preuve documentaire refusée")
             status = "attention" if reasons else "ready"
 
         without_evidence = bool(summary) and not evidence
@@ -191,11 +213,27 @@ def _review_summary(
     counts["total"] = len(items)
     return {"counts": counts, "items": items}
 
+def _document_evidence_index(database, audit_id: UUID) -> dict[int, list[dict]]:
+    rows = database.execute(
+        select(
+            EvidenceModel.question_ref,
+            EvidenceModel.filename,
+            EvidenceModel.status,
+        ).where(EvidenceModel.audit_id == audit_id)
+    ).all()
+    result: dict[int, list[dict]] = {}
+    for question_ref, filename, status in rows:
+        result.setdefault(question_ref, []).append(
+            {"filename": filename, "status": status}
+        )
+    return result
+
 
 def _session_details(
     interview: InterviewSessionModel,
     audit,
     turns: list[InterviewTurnModel],
+    document_evidence: dict[int, list[dict]] | None = None,
 ) -> dict[str, Any]:
     state = dict(interview.followups or {})
     references = [int(reference) for reference in interview.question_refs]
@@ -238,7 +276,7 @@ def _session_details(
         ),
         "last_saved_at": turns[-1].created_at if turns else None,
         "latest_capture": _latest_capture(turns),
-        "review": _review_summary(audit.fiche, turns, references),
+        "review": _review_summary(audit.fiche, turns, references, document_evidence),
         "closing_notes": list(state.get("closing_notes") or []),
         "tavus": state.get("tavus"),
         "turns": [
@@ -498,7 +536,12 @@ async def get_interview_session(
             .where(InterviewTurnModel.session_id == parsed_session_id)
             .order_by(InterviewTurnModel.created_at)
         ).all()
-        return _session_details(interview, audit, turns)
+        return _session_details(
+            interview,
+            audit,
+            turns,
+            _document_evidence_index(database, interview.audit_id),
+        )
 
 
 @router.get("/audits/{audit_id}/interviews/latest")
@@ -523,7 +566,12 @@ async def get_latest_interview_session(
             .where(InterviewTurnModel.session_id == interview.id)
             .order_by(InterviewTurnModel.created_at)
         ).all()
-        return _session_details(interview, audit, turns)
+        return _session_details(
+            interview,
+            audit,
+            turns,
+            _document_evidence_index(database, interview.audit_id),
+        )
 
 @router.post("/interviews/{session_id}/end")
 async def end_interview_session(
