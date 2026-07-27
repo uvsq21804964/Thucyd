@@ -46,6 +46,7 @@ class TavusClientTests(unittest.TestCase):
         self.assertEqual(kwargs["json"]["replica_id"], "r-test")
         self.assertTrue(kwargs["json"]["require_auth"])
         self.assertEqual(kwargs["json"]["max_participants"], 2)
+        self.assertEqual(kwargs["json"]["properties"]["language"], "french")
         self.assertIn("<ornisec_session>", kwargs["json"]["conversational_context"])
 
     def test_missing_persona_is_rejected_before_network_call(self):

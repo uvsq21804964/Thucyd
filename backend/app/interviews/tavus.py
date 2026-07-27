@@ -73,6 +73,7 @@ def create_tavus_conversation(
         "custom_greeting": custom_greeting[:500],
         "require_auth": settings.TAVUS_REQUIRE_AUTH,
         "max_participants": 2,
+        "properties": {"language": "french"},
     }
     if settings.TAVUS_REPLICA_ID:
         payload["replica_id"] = settings.TAVUS_REPLICA_ID

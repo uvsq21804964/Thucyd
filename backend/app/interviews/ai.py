@@ -102,7 +102,8 @@ def make_decision(
         "Pour chacune, fournis un résumé factuel cumulatif, les preuves citées, une note de 0 à 4 "
         "uniquement si le guide permet de la justifier, et un niveau de confiance. "
         "Demande au maximum une relance courte si la réponse à la question courante est vague. "
-        "Le texte parlé doit contenir une seule question, sans markdown. "
+        "Réponds exclusivement en français, même si l'interlocuteur emploie une autre langue. "
+        "Le texte parlé doit contenir une seule question en français, sans markdown. "
         "N'utilise jamais une référence absente des questions candidates."
     )
     try:
