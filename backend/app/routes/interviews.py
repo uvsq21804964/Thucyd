@@ -131,9 +131,14 @@ async def _reuse_active_session(
             get_tavus_conversation_status,
             conversation_id,
         )
-    except TavusAPIError:
-        # A transient status lookup must not create a duplicate paid conversation.
-        provider_status = str(tavus_state.get("status") or "active").lower()
+    except TavusAPIError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Impossible de vérifier la salle Tavus existante. "
+                "Réessayez dans quelques instants."
+            ),
+        ) from exc
 
     if provider_status == "active":
         tavus_state["status"] = "active"
@@ -299,11 +304,14 @@ async def end_interview_session(
 
     if not conversation_id:
         raise HTTPException(status_code=409, detail="Conversation Tavus introuvable")
+    cleanup_pending = False
+    cleanup_error = None
     if not already_ended:
         try:
             await run_in_threadpool(end_tavus_conversation, conversation_id)
         except TavusAPIError as exc:
-            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+            cleanup_pending = True
+            cleanup_error = exc.detail
 
     with session_scope() as database:
         interview = database.scalar(
@@ -315,13 +323,20 @@ async def end_interview_session(
             raise HTTPException(status_code=404, detail="Session d'entretien introuvable")
         state = dict(interview.followups or {})
         tavus_state = dict(state.get("tavus") or {})
-        tavus_state["status"] = "ended"
+        tavus_state["status"] = "end_pending" if cleanup_pending else "ended"
+        if cleanup_error:
+            tavus_state["cleanup_error"] = cleanup_error
         state["tavus"] = tavus_state
         interview.followups = state
         if interview.status != "completed":
             interview.status = "ended"
 
-    return {"session_id": session_id, "status": interview.status, "tavus": tavus_state}
+    return {
+        "session_id": session_id,
+        "status": interview.status,
+        "cleanup_pending": cleanup_pending,
+        "tavus": tavus_state,
+    }
 
 @router.post("/v1/chat/completions")
 async def tavus_chat_completions(
