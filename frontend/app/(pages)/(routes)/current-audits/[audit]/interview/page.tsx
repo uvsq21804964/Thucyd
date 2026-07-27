@@ -17,7 +17,10 @@ import {
   Video,
 } from 'lucide-react';
 
-import TavusCall from '@/components/interviews/TavusCall';
+import TavusCall, {
+  InterviewActivity,
+  InterviewUtterance,
+} from '@/components/interviews/TavusCall';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import API from '@/lib/api-client';
@@ -48,6 +51,10 @@ export default function AIInterviewPage({
   const [session, setSession] = useState<InterviewSession | null>(null);
   const [details, setDetails] = useState<InterviewSessionDetails | null>(null);
   const [error, setError] = useState('');
+  const [activity, setActivity] = useState<InterviewActivity>('connecting');
+  const [lastUtterance, setLastUtterance] = useState<InterviewUtterance | null>(
+    null
+  );
   const startInProgressRef = useRef(false);
 
   useEffect(() => {
@@ -102,7 +109,55 @@ export default function AIInterviewPage({
     setPhase('ended');
   }, [session]);
 
+  const refreshSessionDetails = useCallback(async () => {
+    if (!session) return;
+    try {
+      const refreshed = await getInterviewSession(session.session_id);
+      setDetails(refreshed);
+    } catch {
+      // La vidéo reste prioritaire ; le prochain événement retentera la synchronisation.
+    }
+  }, [session]);
+
+  useEffect(() => {
+    if (phase !== 'active' || !session) return undefined;
+    refreshSessionDetails().catch(() => undefined);
+    const timer = window.setInterval(() => {
+      refreshSessionDetails().catch(() => undefined);
+    }, 4000);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [phase, refreshSessionDetails, session]);
+
+  const handleActivityChange = useCallback((next: InterviewActivity) => {
+    setActivity(next);
+  }, []);
+
+  const handleUtterance = useCallback((utterance: InterviewUtterance) => {
+    setLastUtterance(utterance);
+  }, []);
   const editUrl = `/current-audits/${params.audit}/edit`;
+  const answeredQuestions = details?.answered_questions ?? 0;
+  const totalQuestions = details?.total_questions ?? 0;
+  const completion = totalQuestions
+    ? Math.round((answeredQuestions / totalQuestions) * 100)
+    : 0;
+  const stageLabel = {
+    introduction: 'Introduction',
+    interview: 'Questionnaire en cours',
+    closing: 'Récapitulatif et validation',
+    completed: 'Entretien terminé',
+  }[details?.stage ?? 'introduction'];
+  const activityText: Record<InterviewActivity, string> = {
+    connecting: 'Connexion à la salle…',
+    ready: 'Vous pouvez répondre',
+    'user-speaking': 'Nous vous écoutons',
+    processing: 'Analyse et sauvegarde en cours…',
+    'assistant-speaking': "L'auditeur vous répond",
+    paused: 'Entretien en pause',
+    error: 'Connexion interrompue',
+  };
 
   return (
     <div className="page-shell mx-auto max-w-[1500px]">
@@ -269,40 +324,97 @@ export default function AIInterviewPage({
         <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_320px]">
           <section className="min-h-[620px]">
             <TavusCall
+              conversationId={session.tavus.conversation_id}
               conversationUrl={session.tavus.conversation_url}
               meetingToken={session.tavus.meeting_token}
+              stage={details?.stage ?? 'introduction'}
+              onActivityChange={handleActivityChange}
+              onTurnProcessed={refreshSessionDetails}
+              onUtterance={handleUtterance}
               onLeave={finishInterview}
             />
           </section>
-          <aside className="space-y-4">
+          <aside className="space-y-4" aria-live="polite">
             <div className="surface-card p-5">
-              <div className="flex items-center gap-2 text-sm font-semibold text-emerald-700">
-                <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-emerald-500" />
-                Entretien actif
+              <div className="flex items-center gap-2 text-sm font-semibold text-violet-700">
+                {activity === 'processing' ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <span
+                    className={`h-2.5 w-2.5 rounded-full ${
+                      activity === 'paused'
+                        ? 'bg-amber-500'
+                        : 'animate-pulse bg-emerald-500'
+                    }`}
+                  />
+                )}
+                {activityText[activity]}
               </div>
-              <p className="mt-3 text-sm leading-6 text-slate-600">
-                Répondez avec des exemples concrets et mentionnez les documents
-                ou preuves disponibles.
+              <p className="mt-2 text-xs leading-5 text-slate-500">
+                {activity === 'processing'
+                  ? 'Votre réponse est reformulée puis enregistrée dans le questionnaire.'
+                  : 'Parlez naturellement et terminez votre phrase avant de laisser l’avatar reprendre.'}
               </p>
             </div>
+
             <div className="surface-card p-5">
-              <p className="text-sm font-semibold text-slate-900">
-                Enregistrement automatique
-              </p>
-              <div className="mt-4 space-y-3 text-xs text-slate-500">
-                <p className="flex gap-2">
-                  <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-violet-600" />
-                  Transcription analysée à chaque tour de parole
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-violet-700">
+                    {stageLabel}
+                  </p>
+                  <p className="mt-1 text-sm font-semibold text-slate-900">
+                    {answeredQuestions} sur {totalQuestions || '—'} points
+                    couverts
+                  </p>
+                </div>
+                <span className="text-xl font-bold text-violet-700">
+                  {completion}%
+                </span>
+              </div>
+              <div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-200">
+                <div
+                  className="h-full rounded-full bg-violet-600 transition-all duration-500"
+                  style={{ width: `${completion}%` }}
+                />
+              </div>
+              {details?.current_question && details.stage === 'interview' && (
+                <div className="mt-4 rounded-xl bg-slate-50 p-3">
+                  <p className="text-xs font-semibold text-slate-800">
+                    {details.current_question.category || 'Thème en cours'}
+                  </p>
+                  <p className="mt-1 text-xs text-slate-500">
+                    {details.current_question.workstream ||
+                      `Question ${details.current_question.ref}`}
+                  </p>
+                </div>
+              )}
+            </div>
+
+            {lastUtterance && (
+              <div className="surface-card p-5">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  {lastUtterance.role === 'user'
+                    ? 'Votre dernière intervention'
+                    : "Dernière réponse de l'auditeur"}
                 </p>
-                <p className="flex gap-2">
-                  <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-violet-600" />
-                  Plusieurs questions peuvent être complétées ensemble
-                </p>
-                <p className="flex gap-2">
-                  <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-violet-600" />
-                  Aucun bouton Enregistrer nécessaire
+                <p className="mt-2 line-clamp-4 text-sm leading-6 text-slate-700">
+                  {lastUtterance.text}
                 </p>
               </div>
+            )}
+
+            <div className="surface-card p-5">
+              <div className="flex items-center gap-2 text-sm font-semibold text-emerald-700">
+                <CheckCircle2 className="h-4 w-4" />
+                {details?.last_saved_at
+                  ? 'Dernier tour enregistré'
+                  : 'Sauvegarde automatique prête'}
+              </div>
+              <p className="mt-2 text-xs leading-5 text-slate-500">
+                Les boutons sous la vidéo permettent de répéter, reformuler,
+                passer un point, corriger ou faire une pause.
+              </p>
             </div>
           </aside>
         </div>

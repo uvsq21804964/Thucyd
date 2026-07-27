@@ -9,7 +9,13 @@ from sqlalchemy import select
 
 from app.AuditDao.openaudits import OpenAudits
 from app.database import AuditModel, SessionLocal, session_scope
-from app.interviews.ai import AnswerUpdate, InterviewDecision, make_decision, select_candidates
+from app.interviews.ai import (
+    AnswerUpdate,
+    InterviewDecision,
+    make_decision,
+    rephrase_question,
+    select_candidates,
+)
 from app.interviews.models import InterviewSessionModel, InterviewTurnModel
 
 CLOSING_TEXT = (
@@ -19,6 +25,10 @@ CLOSING_TEXT = (
 TAVUS_ANALYSIS_BLOCK = re.compile(
     r"<(?P<tag>[\w:-]*analysis)\b[^>]*>.*?</(?P=tag)\s*>",
     flags=re.IGNORECASE | re.DOTALL,
+)
+CONTROL_COMMAND = re.compile(
+    r"\[THUCYD_COMMAND:(repeat|rephrase|correct_previous)\]",
+    flags=re.IGNORECASE,
 )
 
 
@@ -44,6 +54,59 @@ def _last_user_text(messages: list) -> str:
         if message.role == "user":
             return _clean_tavus_text(message.text_content())
     return ""
+
+
+def _last_assistant_text(messages: list) -> str:
+    for message in reversed(messages):
+        if message.role == "assistant":
+            return " ".join(message.text_content().split())
+    return ""
+
+
+def _detect_command(transcript: str) -> str | None:
+    explicit = CONTROL_COMMAND.search(transcript)
+    if explicit:
+        return explicit.group(1).lower()
+    normalized = transcript.casefold().strip(" .!?")
+    if re.fullmatch(r"(pouvez-vous |peux-tu )?(répéter|répétez)( la question)?", normalized):
+        return "repeat"
+    if re.fullmatch(r"(pouvez-vous |peux-tu )?(reformuler|reformulez)( la question)?", normalized):
+        return "rephrase"
+    if re.fullmatch(r"(pause|mettez? en pause|fais une pause)", normalized):
+        return "pause"
+    if re.fullmatch(
+        r"(je (souhaite|voudrais) )?(corriger|modifier|reprendre) "
+        r"(ma |la )?(dernière|précédente) réponse",
+        normalized,
+    ):
+        return "correct_previous"
+    return None
+
+
+def _is_ready_to_start(transcript: str) -> bool:
+    normalized = transcript.casefold()
+    return not any(
+        phrase in normalized
+        for phrase in ("pas encore", "attendez", "une minute", "pas prêt", "pas prête")
+    )
+
+
+def _is_close_confirmation(transcript: str) -> bool:
+    normalized = transcript.casefold().strip(" .!?")
+    if normalized in {
+        "oui",
+        "oui merci",
+        "on peut terminer",
+        "nous pouvons terminer",
+        "vous pouvez clôturer",
+        "je confirme",
+        "terminer",
+        "clôturer",
+    }:
+        return True
+    return normalized.startswith("oui") and any(
+        marker in normalized for marker in ("termin", "clôtur", "fin de l'entretien")
+    )
 
 
 def _recent_dialogue(messages: list, limit: int = 8) -> list[dict[str, str]]:
@@ -118,6 +181,225 @@ def _next_uncovered_index(references: list[int], current_index: int, covered_ref
     return None
 
 
+def _closing_prompt(questions: list[dict], covered_count: int, total: int) -> str:
+    ranked = sorted(
+        (question for question in questions if str(question.get("comment") or "").strip()),
+        key=lambda question: (
+            question.get("note numérique") is None,
+            question.get("note numérique") if question.get("note numérique") is not None else 5,
+        ),
+    )
+    snippets = []
+    for question in ranked[:2]:
+        summary = _clean_tavus_text(str(question.get("comment") or "")).split(
+            "Preuves mentionnées :", 1
+        )[0].strip()
+        if summary:
+            snippets.append(summary[:180].rstrip(" .") + ".")
+    recap = " ".join(snippets)
+    opening = f"Nous avons parcouru {covered_count} point{'s' if covered_count > 1 else ''} sur {total}."
+    if recap:
+        opening = f"{opening} Je retiens notamment ceci : {recap}"
+    return f"{opening} Souhaitez-vous clôturer l'entretien maintenant ?"
+
+
+def _add_control_turn(
+    database,
+    *,
+    session_id: UUID,
+    turn_index: int,
+    transcript: str,
+    assistant_text: str,
+    action: str,
+    input_hash: str,
+):
+    database.add(
+        InterviewTurnModel(
+            session_id=session_id,
+            turn_index=turn_index,
+            question_ref=None,
+            transcript=transcript[:20_000],
+            assistant_text=assistant_text,
+            decision={
+                "action": action,
+                "question_ref": None,
+                "reason": "Commande de contrôle de l'entretien.",
+                "updates": [],
+                "source": "control",
+            },
+            input_hash=input_hash,
+        )
+    )
+
+
+def _process_introduction(
+    session_id: UUID,
+    audit_id: UUID,
+    transcript: str,
+    input_hash: str,
+    first_question: str,
+) -> str:
+    with session_scope() as database:
+        interview = database.scalar(
+            select(InterviewSessionModel)
+            .where(InterviewSessionModel.id == session_id)
+            .with_for_update()
+        )
+        if interview is None or interview.audit_id != audit_id:
+            raise HTTPException(status_code=404, detail="Session d'entretien introuvable")
+        duplicate = database.scalar(
+            select(InterviewTurnModel).where(
+                InterviewTurnModel.session_id == session_id,
+                InterviewTurnModel.input_hash == input_hash,
+            )
+        )
+        if duplicate is not None:
+            return duplicate.assistant_text
+        state = dict(interview.followups or {})
+        if state.get("stage") != "introduction":
+            raise HTTPException(status_code=409, detail="L'introduction a déjà été traitée")
+        if _is_ready_to_start(transcript):
+            state["stage"] = "interview"
+            assistant_text = f"Parfait, commençons. {first_question}"
+            action = "introduction_complete"
+        else:
+            assistant_text = (
+                "Bien sûr. Prenez le temps nécessaire et dites-moi lorsque vous êtes prêt à commencer."
+            )
+            action = "introduction_wait"
+        interview.followups = state
+        interview.updated_at = datetime.now(timezone.utc)
+        _add_control_turn(
+            database,
+            session_id=session_id,
+            turn_index=-1,
+            transcript=transcript,
+            assistant_text=assistant_text,
+            action=action,
+            input_hash=input_hash,
+        )
+        return assistant_text
+
+
+def _process_closing(
+    session_id: UUID,
+    audit_id: UUID,
+    transcript: str,
+    input_hash: str,
+    turn_index: int,
+) -> str:
+    with session_scope() as database:
+        interview = database.scalar(
+            select(InterviewSessionModel)
+            .where(InterviewSessionModel.id == session_id)
+            .with_for_update()
+        )
+        if interview is None or interview.audit_id != audit_id:
+            raise HTTPException(status_code=404, detail="Session d'entretien introuvable")
+        duplicate = database.scalar(
+            select(InterviewTurnModel).where(
+                InterviewTurnModel.session_id == session_id,
+                InterviewTurnModel.input_hash == input_hash,
+            )
+        )
+        if duplicate is not None:
+            return duplicate.assistant_text
+        state = dict(interview.followups or {})
+        if _is_close_confirmation(transcript):
+            state["stage"] = "completed"
+            interview.status = "completed"
+            assistant_text = CLOSING_TEXT
+            action = "complete"
+        else:
+            notes = list(state.get("closing_notes") or [])
+            if transcript.casefold().strip(" .!?") not in {"non", "pas encore"}:
+                notes.append(transcript[:1000])
+                state["closing_notes"] = notes[-3:]
+            assistant_text = (
+                "Très bien. Vous pouvez corriger votre dernière réponse ou me dire lorsque vous souhaitez clôturer."
+            )
+            action = "closing_wait"
+        interview.followups = state
+        interview.updated_at = datetime.now(timezone.utc)
+        _add_control_turn(
+            database,
+            session_id=session_id,
+            turn_index=turn_index,
+            transcript=transcript,
+            assistant_text=assistant_text,
+            action=action,
+            input_hash=input_hash,
+        )
+        return assistant_text
+
+
+def _rewind_previous_answer(
+    session_id: UUID,
+    audit_id: UUID,
+    transcript: str,
+    input_hash: str,
+) -> str:
+    with session_scope() as database:
+        interview = database.scalar(
+            select(InterviewSessionModel)
+            .where(InterviewSessionModel.id == session_id)
+            .with_for_update()
+        )
+        audit = database.scalar(
+            select(AuditModel).where(AuditModel.id == audit_id).with_for_update()
+        )
+        if interview is None or audit is None or interview.audit_id != audit_id:
+            raise HTTPException(status_code=404, detail="Session d'entretien introuvable")
+        duplicate = database.scalar(
+            select(InterviewTurnModel).where(
+                InterviewTurnModel.session_id == session_id,
+                InterviewTurnModel.input_hash == input_hash,
+            )
+        )
+        if duplicate is not None:
+            return duplicate.assistant_text
+        previous = database.scalar(
+            select(InterviewTurnModel)
+            .where(
+                InterviewTurnModel.session_id == session_id,
+                InterviewTurnModel.question_ref.is_not(None),
+            )
+            .order_by(InterviewTurnModel.created_at.desc())
+            .limit(1)
+        )
+        if previous is None or previous.question_ref not in interview.question_refs:
+            return "Aucune réponse précédente ne peut encore être corrigée."
+        references = [int(reference) for reference in interview.question_refs]
+        previous_ref = int(previous.question_ref)
+        previous_index = references.index(previous_ref)
+        questions = OpenAudits._normalize_questions(audit.questionnaire)
+        question = next(item for item in questions if int(item["ref"]) == previous_ref)
+        state = dict(interview.followups or {})
+        covered_refs = {int(reference) for reference in state.get("covered_refs", [])}
+        covered_refs.discard(previous_ref)
+        state["covered_refs"] = sorted(covered_refs)
+        state["stage"] = "interview"
+        state["correction_ref"] = previous_ref
+        state.pop(str(previous_ref), None)
+        interview.current_index = previous_index
+        interview.status = "active"
+        interview.followups = state
+        interview.updated_at = datetime.now(timezone.utc)
+        assistant_text = (
+            "Bien sûr, reprenons ce point. " + str(question["question"]).strip()
+        )
+        _add_control_turn(
+            database,
+            session_id=session_id,
+            turn_index=previous_index,
+            transcript=transcript,
+            assistant_text=assistant_text,
+            action="correct_previous",
+            input_hash=input_hash,
+        )
+        return assistant_text
+
+
 def process_turn(session_id: UUID, audit_id: UUID, messages: list) -> str:
     input_hash = _history_hash(messages)
     transcript = _last_user_text(messages)
@@ -134,6 +416,7 @@ def process_turn(session_id: UUID, audit_id: UUID, messages: list) -> str:
         snapshot_status = interview_snapshot.status
         references = [int(reference) for reference in interview_snapshot.question_refs]
         followups = dict(interview_snapshot.followups or {})
+        stage = str(followups.get("stage") or "interview")
         questions = OpenAudits._normalize_questions(audit_snapshot.questionnaire)
 
     if snapshot_status == "completed":
@@ -149,7 +432,42 @@ def process_turn(session_id: UUID, audit_id: UUID, messages: list) -> str:
     if current_question is None:
         raise HTTPException(status_code=409, detail="Question d'entretien introuvable")
     if not transcript:
+        if stage == "introduction":
+            return "Dites-moi simplement lorsque vous êtes prêt à commencer."
+        if stage == "closing":
+            return str(followups.get("closing_prompt") or CLOSING_TEXT)
         return str(current_question["question"]).strip()
+
+    command = _detect_command(transcript)
+    previous_prompt = _last_assistant_text(messages) or str(current_question["question"]).strip()
+    if command == "repeat":
+        return f"Bien sûr. {previous_prompt}"
+    if command == "rephrase":
+        rephrased = rephrase_question(previous_prompt, recent_dialogue)
+        return _safe_followup(rephrased or f"Autrement dit, {previous_prompt}")
+    if command == "pause":
+        return (
+            "Bien sûr. L'entretien est en pause. Utilisez le bouton Reprendre "
+            "lorsque vous êtes prêt."
+        )
+    if command == "correct_previous":
+        return _rewind_previous_answer(session_id, audit_id, transcript, input_hash)
+    if stage == "introduction":
+        return _process_introduction(
+            session_id,
+            audit_id,
+            transcript,
+            input_hash,
+            str(current_question["question"]).strip(),
+        )
+    if stage == "closing":
+        return _process_closing(
+            session_id,
+            audit_id,
+            transcript,
+            input_hash,
+            snapshot_index,
+        )
 
     candidates = select_candidates(questions, snapshot_index, transcript)
     ai_decision = make_decision(
@@ -190,11 +508,24 @@ def process_turn(session_id: UUID, audit_id: UUID, messages: list) -> str:
 
         stored_questions = OpenAudits._normalize_questions(audit.questionnaire)
         stored_by_ref = {int(question["ref"]): question for question in stored_questions}
+        state = dict(interview.followups or {})
+        correction_ref = state.get("correction_ref")
+        is_correction = (
+            isinstance(correction_ref, int) and correction_ref == current_reference
+        )
+        has_correction_update = any(
+            update.question_ref == current_reference for update in decision.updates
+        )
         applied_updates = []
         covered_refs = {
-            int(reference)
-            for reference in dict(interview.followups or {}).get("covered_refs", [])
+            int(reference) for reference in state.get("covered_refs", [])
         }
+        if is_correction and has_correction_update:
+            corrected_question = stored_by_ref.get(current_reference)
+            if corrected_question is not None:
+                corrected_question["comment"] = ""
+                corrected_question["note numérique"] = None
+            state.pop("correction_ref", None)
         for update in decision.updates:
             question = stored_by_ref.get(update.question_ref)
             if question is None:
@@ -204,10 +535,12 @@ def process_turn(session_id: UUID, audit_id: UUID, messages: list) -> str:
                 covered_refs.add(update.question_ref)
             applied_updates.append(update.model_dump())
 
-        state = dict(interview.followups or {})
         state["covered_refs"] = sorted(covered_refs)
         followup_count = int(state.get(str(current_reference), 0))
-        should_follow_up = decision.action == "follow_up" and followup_count < 1
+        should_follow_up = (
+            (decision.action == "follow_up" or (is_correction and not has_correction_update))
+            and followup_count < 1
+        )
 
         if should_follow_up:
             state[str(current_reference)] = followup_count + 1
@@ -218,9 +551,14 @@ def process_turn(session_id: UUID, audit_id: UUID, messages: list) -> str:
             state["covered_refs"] = sorted(covered_refs)
             next_index = _next_uncovered_index(references, snapshot_index, covered_refs)
             if next_index is None:
-                interview.status = "completed"
-                assistant_text = CLOSING_TEXT
-                action = "complete"
+                state["stage"] = "closing"
+                assistant_text = _closing_prompt(
+                    stored_questions,
+                    len(covered_refs),
+                    len(references),
+                )
+                state["closing_prompt"] = assistant_text
+                action = "closing"
             else:
                 interview.current_index = next_index
                 next_question = stored_by_ref.get(references[next_index])

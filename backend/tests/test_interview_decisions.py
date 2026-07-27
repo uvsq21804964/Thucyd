@@ -6,6 +6,10 @@ os.environ.setdefault("INITIAL_ADMIN_PASSWORD", "test-admin-password")
 
 from app.interviews.ai import AnswerUpdate, InterviewDecision, select_candidates
 from app.interviews.turn_engine import (
+    _closing_prompt,
+    _detect_command,
+    _is_close_confirmation,
+    _is_ready_to_start,
     _last_user_text,
     _merge_result,
     _next_uncovered_index,
@@ -138,6 +142,33 @@ class InterviewDecisionTests(unittest.TestCase):
         )
         self.assertIsNone(target["note numérique"])
         self.assertEqual(target["comment"], "Réponse ambiguë")
+
+    def test_interview_controls_are_detected(self):
+        self.assertEqual(_detect_command("[THUCYD_COMMAND:repeat]"), "repeat")
+        self.assertEqual(_detect_command("Pouvez-vous reformuler la question ?"), "rephrase")
+        self.assertEqual(_detect_command("Pause"), "pause")
+        self.assertEqual(
+            _detect_command("Je voudrais corriger ma dernière réponse"),
+            "correct_previous",
+        )
+
+    def test_introduction_waits_until_the_participant_is_ready(self):
+        self.assertFalse(_is_ready_to_start("Pas encore, une minute."))
+        self.assertTrue(_is_ready_to_start("Oui, allons-y."))
+
+    def test_closing_requires_an_explicit_confirmation(self):
+        self.assertFalse(_is_close_confirmation("Je voudrais ajouter un détail."))
+        self.assertTrue(_is_close_confirmation("Oui, vous pouvez clôturer l'entretien."))
+
+    def test_closing_prompt_contains_progress_and_summary(self):
+        questions = [
+            question(1, "Question 1", comment="Une politique est documentée."),
+            question(2, "Question 2", comment="Des revues sont organisées."),
+        ]
+        prompt = _closing_prompt(questions, covered_count=2, total=2)
+        self.assertIn("2 points sur 2", prompt)
+        self.assertIn("Une politique est documentée", prompt)
+        self.assertTrue(prompt.endswith("?"))
 
     def test_next_question_skips_already_covered_references(self):
         self.assertEqual(_next_uncovered_index([1, 2, 3, 4], 0, {1, 2, 3}), 3)

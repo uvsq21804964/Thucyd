@@ -10,7 +10,7 @@ os.environ.setdefault("DATABASE_URL", "postgresql+psycopg://test:test@localhost/
 os.environ.setdefault("INITIAL_ADMIN_PASSWORD", "test-admin-password")
 
 from app.interviews.tokens import create_session_token, extract_session_claims, tavus_context
-from app.routes.interviews import ChatMessage, _stream_response
+from app.routes.interviews import ChatMessage, _opening_greeting, _stream_response
 
 
 class InterviewContractTests(unittest.TestCase):
@@ -34,6 +34,13 @@ class InterviewContractTests(unittest.TestCase):
             content=[{"type": "text", "text": "Première partie"}, {"text": "seconde partie"}],
         )
         self.assertEqual(message.text_content(), "Première partie seconde partie")
+
+    def test_opening_greeting_explains_the_interview_before_questioning(self):
+        greeting = _opening_greeting("ACME", 20)
+        self.assertIn("ACME", greeting)
+        self.assertIn("20 questions", greeting)
+        self.assertIn("enregistr", greeting)
+        self.assertTrue(greeting.endswith("?"))
 
     def test_sse_stream_is_openai_compatible(self):
         async def collect():

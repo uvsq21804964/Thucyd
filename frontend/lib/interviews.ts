@@ -17,7 +17,7 @@ export type InterviewSession = {
 };
 
 export type InterviewTurn = {
-  question_ref: number;
+  question_ref: number | null;
   transcript: string;
   assistant_text: string;
   created_at: string;
@@ -29,6 +29,15 @@ export type InterviewSessionDetails = {
   status: string;
   current_index: number;
   total_questions: number;
+  answered_questions: number;
+  stage: 'introduction' | 'interview' | 'closing' | 'completed';
+  current_question: {
+    ref: number;
+    category: string;
+    workstream: string;
+  } | null;
+  last_saved_at: string | null;
+  closing_notes: string[];
   tavus: TavusRoom | null;
   turns: InterviewTurn[];
 };

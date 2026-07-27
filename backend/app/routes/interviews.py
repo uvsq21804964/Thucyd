@@ -27,6 +27,17 @@ from app.settings import settings
 router = APIRouter()
 
 
+def _opening_greeting(company_name: str, total_questions: int) -> str:
+    estimated_minutes = max(5, min(45, round(total_questions * 0.75)))
+    return (
+        f"Bonjour, je suis l'auditeur IA de Thucyd pour l'audit de {company_name}. "
+        f"L'entretien comporte {total_questions} questions et durera environ {estimated_minutes} minutes. "
+        "Vos réponses seront enregistrées automatiquement. Vous pourrez me demander de répéter, "
+        "de reformuler, de faire une pause ou de corriger votre dernière réponse. "
+        "Êtes-vous prêt à commencer ?"
+    )[:500]
+
+
 class ChatMessage(BaseModel):
     model_config = ConfigDict(extra="allow")
 
@@ -184,7 +195,7 @@ async def create_interview_session(
         raise HTTPException(status_code=503, detail="OPENAI_API_KEY n'est pas configurée")
 
     parsed_audit_id = UUID(audit_id)
-    custom_greeting = str(audit.fiche[0]["question"]).strip()
+    custom_greeting = _opening_greeting(audit.company_name, len(references))
     reusable_session = await _reuse_active_session(
         parsed_audit_id,
         custom_greeting,
@@ -203,7 +214,11 @@ async def create_interview_session(
                 audit_id=parsed_audit_id,
                 question_refs=references,
                 status="creating",
-                followups={"tavus": {"status": "creating"}},
+                followups={
+                    "stage": "introduction",
+                    "covered_refs": [],
+                    "tavus": {"status": "creating"},
+                },
             )
         )
 
@@ -258,7 +273,28 @@ async def get_interview_session(
         interview = database.get(InterviewSessionModel, parsed_session_id)
         if interview is None:
             raise HTTPException(status_code=404, detail="Session d'entretien introuvable")
-        _authorized_audit(str(interview.audit_id), Authorize, access_token)
+        audit, _, _ = _authorized_audit(str(interview.audit_id), Authorize, access_token)
+        state = dict(interview.followups or {})
+        references = [int(reference) for reference in interview.question_refs]
+        covered_refs = {
+            int(reference)
+            for reference in state.get("covered_refs", [])
+            if int(reference) in references
+        }
+        current_reference = (
+            references[min(interview.current_index, len(references) - 1)]
+            if references
+            else None
+        )
+        current_question = next(
+            (
+                question
+                for question in audit.fiche
+                if current_reference is not None
+                and int(question.get("ref", -1)) == current_reference
+            ),
+            None,
+        )
         turns = database.scalars(
             select(InterviewTurnModel)
             .where(InterviewTurnModel.session_id == parsed_session_id)
@@ -270,7 +306,20 @@ async def get_interview_session(
             "status": interview.status,
             "current_index": interview.current_index,
             "total_questions": len(interview.question_refs),
-            "tavus": dict(interview.followups or {}).get("tavus"),
+            "answered_questions": len(covered_refs),
+            "stage": state.get("stage", "interview"),
+            "current_question": (
+                {
+                    "ref": int(current_question["ref"]),
+                    "category": str(current_question.get("catégorie") or ""),
+                    "workstream": str(current_question.get("chantier") or ""),
+                }
+                if current_question is not None
+                else None
+            ),
+            "last_saved_at": turns[-1].created_at if turns else None,
+            "closing_notes": list(state.get("closing_notes") or []),
+            "tavus": state.get("tavus"),
             "turns": [
                 {
                     "question_ref": turn.question_ref,
