@@ -1,5 +1,6 @@
 from datetime import datetime
 from typing import List, Literal, Union
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, constr, field_validator, model_validator
 
@@ -101,6 +102,18 @@ class audits(BaseModel):
     list_auditeurs: list[str]
     description: str
     questionnaire: list[AuditQuestionInput] | None = Field(default=None, min_length=1, max_length=1000)
+    questionnaire_name: str | None = Field(default=None, min_length=2, max_length=255)
+    questionnaire_version_id: UUID | None = None
+
+    @field_validator("questionnaire_name")
+    @classmethod
+    def clean_questionnaire_name(cls, value):
+        if value is None:
+            return None
+        value = " ".join(value.split())
+        if len(value) < 2:
+            raise ValueError("le nom du référentiel doit contenir au moins 2 caractères")
+        return value
 
     @field_validator("questionnaire")
     @classmethod
@@ -120,6 +133,22 @@ class audits(BaseModel):
             if source_position >= index:
                 raise ValueError("une condition doit référencer une question placée plus tôt")
         return value
+
+    @model_validator(mode="after")
+    def validate_questionnaire_selection(self):
+        if self.questionnaire is not None and self.questionnaire_version_id is not None:
+            raise ValueError(
+                "questionnaire et questionnaire_version_id sont mutuellement exclusifs"
+            )
+        if self.questionnaire is not None and not self.questionnaire_name:
+            raise ValueError(
+                "questionnaire_name est obligatoire pour un référentiel personnalisé"
+            )
+        if self.questionnaire is None and self.questionnaire_name is not None:
+            raise ValueError(
+                "questionnaire_name ne peut être utilisé sans questionnaire personnalisé"
+            )
+        return self
 
 
 class setmark(BaseModel):

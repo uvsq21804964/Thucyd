@@ -50,6 +50,14 @@ Opérateurs disponibles : `eq`, `neq`, `lt`, `lte`, `gt`, `gte`, `in`,
 `not_in`, `answered` et `unanswered`. Les branches masquées sont ignorées dans
 la progression, le score, les preuves et l'entretien IA.
 
+## Versionnement des questionnaires
+
+Chaque audit est lié à un instantané immuable du référentiel utilisé (nom,
+numéro de version et empreinte SHA-256). Un JSON modifié sous le même nom crée
+la version suivante ; une version antérieure peut être sélectionnée lors de la
+création d’un audit. Au démarrage, les audits historiques sont rattachés sans
+modifier leurs réponses.
+
 ## Suivi des entretiens IA
 
 La vue **Suivi IA** agrège la dernière session de chaque audit accessible :

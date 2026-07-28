@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.database import engine, init_database
+from app.questionnaires.versioning import backfill_questionnaire_versions
 from app.routes import GestionAudit, action_plan, authentification, evidence, interviews
 from app.settings import settings
 
@@ -11,6 +12,7 @@ from app.settings import settings
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_database()
+    backfill_questionnaire_versions()
     yield
     engine.dispose()
 

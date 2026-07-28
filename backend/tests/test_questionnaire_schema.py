@@ -29,6 +29,9 @@ class QuestionnaireSchemaTests(unittest.TestCase):
             "list_auditeurs": ["Alice"],
             "description": "Audit personnalisé",
             "questionnaire": questionnaire,
+            "questionnaire_name": (
+                "Référentiel interne" if questionnaire is not None else None
+            ),
         }
 
     def test_accepts_exact_questionnaire_format(self):
@@ -75,10 +78,33 @@ class QuestionnaireSchemaTests(unittest.TestCase):
         conditional["display_if"] = {"question_ref": 1, "operator": "in", "value": 2}
         with self.assertRaises(ValidationError):
             audits.model_validate(self.payload([question(1), conditional]))
+
     def test_rejects_unknown_keys(self):
         invalid = {**question(), "clé inattendue": True}
         with self.assertRaises(ValidationError):
             audits.model_validate(self.payload([invalid]))
+
+    def test_requires_a_name_for_custom_questionnaire(self):
+        payload = self.payload([question()])
+        payload["questionnaire_name"] = None
+        with self.assertRaises(ValidationError):
+            audits.model_validate(payload)
+
+    def test_accepts_an_existing_questionnaire_version(self):
+        payload = self.payload(None)
+        payload["questionnaire_version_id"] = (
+            "3d83ce80-45e2-41f9-bd3e-2d3492159a91"
+        )
+        validated = audits.model_validate(payload)
+        self.assertIsNotNone(validated.questionnaire_version_id)
+
+    def test_rejects_custom_questionnaire_and_existing_version_together(self):
+        payload = self.payload([question()])
+        payload["questionnaire_version_id"] = (
+            "3d83ce80-45e2-41f9-bd3e-2d3492159a91"
+        )
+        with self.assertRaises(ValidationError):
+            audits.model_validate(payload)
 
 
 if __name__ == "__main__":

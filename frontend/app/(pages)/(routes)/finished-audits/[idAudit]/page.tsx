@@ -2,12 +2,13 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { ArrowLeft, CalendarDays, ClipboardList, Download, Paperclip, User } from 'lucide-react';
+import { ArrowLeft, CalendarDays, ClipboardList, Download, History, Paperclip, User } from 'lucide-react';
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import API from '@/lib/api-client';
+import { QuestionnaireReference } from '@/lib/questionnaires';
 
 type AuditInfo = {
   _id: string;
@@ -56,6 +57,7 @@ type AuditResults = {
   categories: CategoryResult[];
   questions: AuditQuestion[];
   evidence?: EvidenceMetadata[];
+  questionnaire_reference?: QuestionnaireReference;
 };
 
 const formatScore = (score: number | null) => (score === null ? '—' : `${score.toFixed(2)} / 4`);
@@ -114,6 +116,19 @@ export default function Results({ params }: { params: { idAudit: string } }) {
             {results.audit.finished ? 'Terminé' : 'Incomplet'}
           </Badge>
         </div>
+
+        {results.questionnaire_reference && (
+          <div className="mt-5 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-violet-100 bg-violet-50 px-4 py-3 text-sm text-violet-950">
+            <History className="h-4 w-4 text-violet-700" />
+            <span className="font-semibold">Référentiel utilisé :</span>
+            <span>{results.questionnaire_reference.name}</span>
+            <span>· version {results.questionnaire_reference.version}</span>
+            <span>· {results.questionnaire_reference.question_count} questions</span>
+            <span className="ml-auto font-mono text-[11px] text-violet-700/70" title={results.questionnaire_reference.checksum}>
+              SHA-256 {results.questionnaire_reference.checksum.slice(0, 12)}…
+            </span>
+          </div>
+        )}
 
         <div className="grid gap-4 py-6 md:grid-cols-3">
           <Card>

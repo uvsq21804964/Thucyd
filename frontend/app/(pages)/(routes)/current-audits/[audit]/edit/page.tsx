@@ -5,15 +5,16 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { CheckCircle2, ChevronLeft, ChevronRight, ListFilter, Loader2, Video } from 'lucide-react';
+import { CheckCircle2, ChevronLeft, ChevronRight, History, ListFilter, Loader2, Video } from 'lucide-react';
 import toast from 'react-hot-toast';
 
 import { Button } from '@/components/ui/button';
 import API from '@/lib/api-client';
+import { QuestionnaireReference } from '@/lib/questionnaires';
 import { cn } from '@/lib/utils';
 import Questionnaire from './_components/Questionnaire';
 
-type AuditInfo = { companie: string; chef?: string; finished: boolean };
+type AuditInfo = { companie: string; chef?: string; finished: boolean; questionnaire_reference?: QuestionnaireReference };
 type CurrentUser = { name: string; role: number };
 type Gauge = { incomplete: number; 'total question': number };
 type QuestionData = { ref: string | number; catégorie: string; chantier: string; question: string; comment: string; 'note numérique': number | null; 'aide à la notation': string[]; display_if?: { question_ref: number; operator: string; value?: number | number[] } };
@@ -106,6 +107,20 @@ export default function Edit({ params, searchParams }: { params: { audit: string
             {canClose && !auditInfo?.finished && (confirmClosing ? <div className="flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 p-2"><span className="hidden text-xs text-amber-900 lg:inline">Clôturer définitivement ?</span><Button type="button" size="sm" variant="outline" disabled={closing} onClick={() => setConfirmClosing(false)}>Annuler</Button><Button type="button" size="sm" disabled={closing} onClick={completeAudit}>{closing && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}Confirmer</Button></div> : <Button type="button" onClick={() => { if (gauge?.incomplete) { setOnlyIncomplete(true); toast.error(`${gauge.incomplete} question(s) restent à noter avant la clôture.`); } else setConfirmClosing(true); }} className="rounded-xl bg-emerald-600 hover:bg-emerald-700"><CheckCircle2 className="mr-2 h-4 w-4" />Clôturer</Button>)}
           </div>
         </div>
+
+        {auditInfo?.questionnaire_reference && (
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-xl border border-violet-100 bg-violet-50/70 px-4 py-2.5 text-sm text-violet-950">
+            <History className="h-4 w-4 text-violet-700" />
+            <span className="font-semibold">Référentiel utilisé :</span>
+            <span>{auditInfo.questionnaire_reference.name}</span>
+            <span className="rounded-full bg-white px-2 py-0.5 text-xs font-semibold text-violet-700">
+              version {auditInfo.questionnaire_reference.version}
+            </span>
+            <span className="text-xs text-violet-700/70">
+              {auditInfo.questionnaire_reference.question_count} questions
+            </span>
+          </div>
+        )}
 
         {gauge && <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm" aria-label="Progression de l'audit"><div className="flex flex-wrap items-end justify-between gap-3"><div><p className="text-sm font-semibold text-slate-900">{gauge['total question'] - gauge.incomplete} sur {gauge['total question']} questions complétées</p><p className="mt-1 text-xs text-slate-500">{gauge.incomplete ? `${gauge.incomplete} réponse(s) à compléter` : 'Toutes les questions sont complétées'}</p></div><span className="text-2xl font-bold text-violet-700">{completion}%</span></div><div className="mt-3 h-2.5 overflow-hidden rounded-full bg-slate-200"><div className="h-full rounded-full bg-violet-600 transition-all duration-500" style={{ width: `${completion}%` }} /></div></section>}
 

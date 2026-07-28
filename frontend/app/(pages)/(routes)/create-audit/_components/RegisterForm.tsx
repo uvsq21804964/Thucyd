@@ -12,7 +12,7 @@ import toast from 'react-hot-toast';
 import { Button } from '@/components/ui/button';
 import API from '@/lib/api-client';
 import { cn } from '@/lib/utils';
-import QuestionnaireImport, { QuestionnaireQuestion } from './QuestionnaireImport';
+import QuestionnaireImport, { QuestionnaireSelection } from './QuestionnaireImport';
 
 type UserOption = { id: string; email: string; name: string };
 type AuditFields = { companyName: string; description: string; leader: string };
@@ -24,7 +24,7 @@ export default function RegisterForm() {
   const [search, setSearch] = useState('');
   const [loadingUsers, setLoadingUsers] = useState(true);
   const [submitting, setSubmitting] = useState(false);
-  const [questionnaire, setQuestionnaire] = useState<QuestionnaireQuestion[] | undefined>();
+  const [questionnaireSelection, setQuestionnaireSelection] = useState<QuestionnaireSelection>({});
   const [questionnaireError, setQuestionnaireError] = useState('');
   const { register, handleSubmit, watch, formState: { errors } } = useForm<AuditFields>({ defaultValues: { companyName: '', description: '', leader: '' } });
   const leader = watch('leader');
@@ -52,7 +52,7 @@ export default function RegisterForm() {
         chef_auditeurs: fields.leader,
         list_auditeurs: Array.from(new Set([...selectedAuditors, fields.leader])),
         description: fields.description.trim(),
-        questionnaire,
+        ...questionnaireSelection,
       });
       toast.success('Audit créé avec succès.');
       router.push('/current-audits');
@@ -90,7 +90,7 @@ export default function RegisterForm() {
           </select>
           {errors.leader && <p className="mt-1.5 text-sm text-red-600">{errors.leader.message}</p>}
         </div>
-        <QuestionnaireImport onChange={(value, error) => { setQuestionnaire(value); setQuestionnaireError(error); }} />
+        <QuestionnaireImport onChange={(value, error) => { setQuestionnaireSelection(value); setQuestionnaireError(error); }} />
       </section>
 
       <aside className="surface-card flex max-h-[620px] flex-col p-5 md:p-6">

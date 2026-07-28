@@ -1,9 +1,13 @@
+/* eslint-disable jsx-a11y/label-has-associated-control */
+
 'use client';
 
-import { useState } from 'react';
-import { FileJson, Upload } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { FileJson, History, Upload } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
+import API from '@/lib/api-client';
+import { QuestionnaireReference } from '@/lib/questionnaires';
 import { cn } from '@/lib/utils';
 
 export type DisplayCondition = {
@@ -31,6 +35,12 @@ export type QuestionnaireQuestion = {
   'note numérique': null;
   'aide à la notation': string[];
   display_if?: DisplayCondition;
+};
+
+export type QuestionnaireSelection = {
+  questionnaire?: QuestionnaireQuestion[];
+  questionnaire_name?: string;
+  questionnaire_version_id?: string;
 };
 
 const example: QuestionnaireQuestion[] = [
@@ -212,31 +222,70 @@ export function parseQuestionnaire(value: string): QuestionnaireQuestion[] {
   return parsed as QuestionnaireQuestion[];
 }
 
+const sourceLabel = (source: string) => {
+  if (source === 'builtin') return 'Fourni';
+  if (source === 'legacy') return 'Historique';
+  return 'Personnalisé';
+};
+
 export default function QuestionnaireImport({
   onChange,
 }: {
-  onChange: (
-    questionnaire: QuestionnaireQuestion[] | undefined,
-    error: string
-  ) => void;
+  onChange: (selection: QuestionnaireSelection, error: string) => void;
 }) {
-  const [mode, setMode] = useState<'default' | 'custom'>('default');
+  const [mode, setMode] = useState<'default' | 'saved' | 'custom'>('default');
   const [content, setContent] = useState(JSON.stringify(example, null, 2));
+  const [name, setName] = useState('');
   const [error, setError] = useState('');
+  const [versions, setVersions] = useState<QuestionnaireReference[]>([]);
+  const [loadingVersions, setLoadingVersions] = useState(true);
+  const [selectedVersion, setSelectedVersion] = useState('');
 
-  const update = (value: string) => {
+  useEffect(() => {
+    API.get<{ versions: QuestionnaireReference[] }>('questionnaire-versions')
+      .then(({ data }) => {
+        setVersions(data.versions);
+        setSelectedVersion(data.versions[0]?.id ?? '');
+      })
+      .catch(() => undefined)
+      .finally(() => setLoadingVersions(false));
+  }, []);
+
+  const updateCustom = (value: string, referentialName = name) => {
     setContent(value);
+    const cleanName = referentialName.trim();
+    if (cleanName.length < 2) {
+      const message = 'Donnez un nom au référentiel (2 caractères minimum).';
+      setError(message);
+      onChange({}, message);
+      return;
+    }
     try {
       const parsed = parseQuestionnaire(value);
       setError('');
-      onChange(parsed, '');
+      onChange(
+        { questionnaire: parsed, questionnaire_name: cleanName },
+        ''
+      );
     } catch (parseError) {
       const message =
         parseError instanceof Error
           ? parseError.message
           : 'Questionnaire invalide.';
       setError(message);
-      onChange(undefined, message);
+      onChange({}, message);
+    }
+  };
+
+  const selectSavedVersion = (versionId: string) => {
+    setSelectedVersion(versionId);
+    if (versionId) {
+      setError('');
+      onChange({ questionnaire_version_id: versionId }, '');
+    } else {
+      const message = 'Sélectionnez une version de questionnaire.';
+      setError(message);
+      onChange({}, message);
     }
   };
 
@@ -249,18 +298,17 @@ export default function QuestionnaireImport({
             Questionnaire d’audit
           </h2>
           <p className="mt-1 text-sm text-slate-500">
-            Utilisez le référentiel fourni ou importez votre propre tableau
-            JSON.
+            Le référentiel choisi et sa version seront conservés avec l’audit.
           </p>
         </div>
       </div>
-      <div className="mt-4 grid gap-2 sm:grid-cols-2">
+      <div className="mt-4 grid gap-2 sm:grid-cols-3">
         <button
           type="button"
           onClick={() => {
             setMode('default');
             setError('');
-            onChange(undefined, '');
+            onChange({}, '');
           }}
           className={cn(
             'rounded-xl border p-3 text-left text-sm transition',
@@ -271,14 +319,33 @@ export default function QuestionnaireImport({
         >
           <span className="block font-semibold">Questionnaire fourni</span>
           <span className="mt-1 block text-xs opacity-70">
-            Référentiel complet du site
+            Dernière version Thucyd
+          </span>
+        </button>
+        <button
+          type="button"
+          disabled={loadingVersions || versions.length === 0}
+          onClick={() => {
+            setMode('saved');
+            selectSavedVersion(selectedVersion || versions[0]?.id || '');
+          }}
+          className={cn(
+            'rounded-xl border p-3 text-left text-sm transition disabled:cursor-not-allowed disabled:opacity-50',
+            mode === 'saved'
+              ? 'border-violet-600 bg-violet-50 text-violet-900'
+              : 'border-slate-200 hover:bg-slate-50'
+          )}
+        >
+          <span className="block font-semibold">Version enregistrée</span>
+          <span className="mt-1 block text-xs opacity-70">
+            Réutiliser un référentiel précis
           </span>
         </button>
         <button
           type="button"
           onClick={() => {
             setMode('custom');
-            update(content);
+            updateCustom(content);
           }}
           className={cn(
             'rounded-xl border p-3 text-left text-sm transition',
@@ -287,16 +354,70 @@ export default function QuestionnaireImport({
               : 'border-slate-200 hover:bg-slate-50'
           )}
         >
-          <span className="block font-semibold">
-            Questionnaire personnalisé
-          </span>
+          <span className="block font-semibold">Nouveau JSON</span>
           <span className="mt-1 block text-xs opacity-70">
-            Coller ou importer un fichier JSON
+            Créer ou faire évoluer un référentiel
           </span>
         </button>
       </div>
+
+      {mode === 'saved' && (
+        <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
+          <label
+            htmlFor="questionnaire-version"
+            className="text-sm font-medium text-slate-700"
+          >
+            Version à utiliser
+          </label>
+          <select
+            id="questionnaire-version"
+            value={selectedVersion}
+            disabled={loadingVersions || versions.length === 0}
+            onChange={(event) => selectSavedVersion(event.target.value)}
+            className="form-select mt-2 h-11 w-full rounded-xl border-slate-300 text-sm focus:border-violet-500 focus:ring-violet-500"
+          >
+            {loadingVersions && <option>Chargement…</option>}
+            {!loadingVersions && versions.length === 0 && (
+              <option value="">Aucune version enregistrée</option>
+            )}
+            {versions.map((version) => (
+              <option key={version.id} value={version.id}>
+                {version.name} · v{version.version} · {version.question_count}{' '}
+                questions · {sourceLabel(version.source)}
+              </option>
+            ))}
+          </select>
+          <p className="mt-2 flex items-center gap-1.5 text-xs text-slate-500">
+            <History className="h-3.5 w-3.5" />
+            Cette version restera figée pour garantir la traçabilité de l’audit.
+          </p>
+        </div>
+      )}
+
       {mode === 'custom' && (
         <div className="mt-4 space-y-3">
+          <div>
+            <label
+              htmlFor="questionnaire-name"
+              className="text-sm font-medium text-slate-700"
+            >
+              Nom du référentiel
+            </label>
+            <input
+              id="questionnaire-name"
+              value={name}
+              maxLength={255}
+              placeholder="Ex. ISO 27001 interne"
+              onChange={(event) => {
+                setName(event.target.value);
+                updateCustom(content, event.target.value);
+              }}
+              className="form-input mt-2 h-11 w-full rounded-xl border-slate-300 text-sm focus:border-violet-500 focus:ring-violet-500"
+            />
+            <p className="mt-1.5 text-xs text-slate-500">
+              Même nom + contenu modifié = nouvelle version automatique.
+            </p>
+          </div>
           <label
             htmlFor="questionnaire-file"
             className="flex cursor-pointer items-center justify-center gap-2 rounded-xl border border-dashed border-violet-300 bg-violet-50/60 px-4 py-3 text-sm font-medium text-violet-800 hover:bg-violet-50"
@@ -313,10 +434,11 @@ export default function QuestionnaireImport({
                 if (file)
                   file
                     .text()
-                    .then(update)
+                    .then((value) => updateCustom(value))
                     .catch(() => {
-                      setError('Impossible de lire ce fichier.');
-                      onChange(undefined, 'Impossible de lire ce fichier.');
+                      const message = 'Impossible de lire ce fichier.';
+                      setError(message);
+                      onChange({}, message);
                     });
               }}
             />
@@ -324,7 +446,7 @@ export default function QuestionnaireImport({
           <textarea
             aria-label="Questionnaire JSON"
             value={content}
-            onChange={(event) => update(event.target.value)}
+            onChange={(event) => updateCustom(event.target.value)}
             rows={14}
             spellCheck={false}
             className="form-textarea w-full resize-y rounded-xl border-slate-300 font-mono text-xs leading-5 focus:border-violet-500 focus:ring-violet-500"
@@ -342,7 +464,7 @@ export default function QuestionnaireImport({
               type="button"
               size="sm"
               variant="outline"
-              onClick={() => update(JSON.stringify(example, null, 2))}
+              onClick={() => updateCustom(JSON.stringify(example, null, 2))}
             >
               Réinitialiser l’exemple
             </Button>

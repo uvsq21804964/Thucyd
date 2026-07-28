@@ -1,14 +1,17 @@
 import copy
-import gzip
-import json
 from datetime import datetime, timezone
-from pathlib import Path
 from uuid import UUID
 
 from sqlalchemy import delete, distinct, select
 
 from app.AuditDao.audit import Audit
 from app.database import AuditModel, SessionLocal, session_scope
+from app.questionnaires.versioning import (
+    link_audit_to_version,
+    questions_for_audit,
+    resolve_questionnaire_version,
+    serialize_reference,
+)
 
 
 class OpenAudits:
@@ -61,27 +64,43 @@ class OpenAudits:
         with SessionLocal() as session:
             return list(session.scalars(select(distinct(AuditModel.company_name))).all())
 
-    def CreerAudit(self, company_name: str, chef_auditeurs, list_auditeurs, description=None, questionnaire=None):
-        if questionnaire is None:
-            source = Path(__file__).resolve().parents[1] / "fiche" / "audit_book.json.gz"
-            with gzip.open(source, "rt", encoding="utf-8") as handle:
-                questionnaire = self._normalize_questions(json.load(handle))
-        else:
-            questionnaire = self._normalize_questions(copy.deepcopy(questionnaire))
-        row = AuditModel(
-            company_name=company_name,
-            description=description,
-            chef=chef_auditeurs,
-            auditors=list_auditeurs,
-            started_at=datetime.now(timezone.utc),
-            questionnaire=questionnaire,
-            status="in_progress",
-        )
+    def CreerAudit(
+        self,
+        company_name: str,
+        chef_auditeurs,
+        list_auditeurs,
+        description=None,
+        questionnaire=None,
+        questionnaire_name=None,
+        questionnaire_version_id=None,
+        created_by="system",
+    ):
         with session_scope() as session:
+            version = resolve_questionnaire_version(
+                session,
+                questionnaire=questionnaire,
+                questionnaire_name=questionnaire_name,
+                questionnaire_version_id=questionnaire_version_id,
+                created_by=created_by,
+            )
+            row = AuditModel(
+                company_name=company_name,
+                description=description,
+                chef=chef_auditeurs,
+                auditors=list_auditeurs,
+                started_at=datetime.now(timezone.utc),
+                questionnaire=questions_for_audit(version),
+                status="in_progress",
+            )
             session.add(row)
             session.flush()
-            audit_id = row.id
-        return f"Audit créé avec l'identifiant {audit_id}."
+            link_audit_to_version(session, row.id, version.id)
+            session.flush()
+            return {
+                "audit_id": str(row.id),
+                "message": f"Audit créé avec l'identifiant {row.id}.",
+                "questionnaire_reference": serialize_reference(version),
+            }
 
     def get_audit(self, audit_id):
         parsed = self._uuid(audit_id)

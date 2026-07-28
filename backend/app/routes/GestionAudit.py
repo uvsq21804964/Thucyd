@@ -10,6 +10,11 @@ from app.AuditDao.openaudits import OpenAudits
 from app.database import EvidenceModel, SessionLocal, get_user_by_id
 from app.get_user_role import UserRole, user_role
 from app.oauth2 import AuthJWT
+from app.questionnaires.versioning import (
+    QuestionnaireVersionNotFound,
+    list_questionnaire_versions,
+    questionnaire_reference_for_audit,
+)
 
 les_audits = OpenAudits()
 audit = APIRouter()
@@ -61,26 +66,35 @@ def _require_admin(authorize, access_token):
 @audit.post("/createAudit")
 @audit.post("/createAudit/", include_in_schema=False)
 async def create_audit(payload: schemas.audits, Authorize: AuthJWT = Depends(), access_token: str = Cookie(None)):
-    _identity(Authorize, access_token)
+    _, username = _identity(Authorize, access_token)
     questionnaire = None
     if payload.questionnaire is not None:
         questionnaire = [
-            {
-                **question.model_dump(by_alias=True, exclude_none=True),
-                "comment": "",
-                "note numérique": None,
-            }
+            question.model_dump(by_alias=True, exclude_none=True)
             for question in payload.questionnaire
         ]
-    return {
-        "message": les_audits.CreerAudit(
+    try:
+        return les_audits.CreerAudit(
             payload.company_name,
             payload.chef_auditeurs,
             payload.list_auditeurs,
             payload.description,
             questionnaire,
+            payload.questionnaire_name,
+            payload.questionnaire_version_id,
+            username,
         )
-    }
+    except QuestionnaireVersionNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@audit.get("/questionnaire-versions")
+async def questionnaire_versions(
+    Authorize: AuthJWT = Depends(),
+    access_token: str = Cookie(None),
+):
+    _identity(Authorize, access_token)
+    return {"versions": list_questionnaire_versions()}
 
 
 def _ensure_editable(item):
@@ -186,12 +200,16 @@ async def audit_results(id: str, Authorize: AuthJWT = Depends(), access_token: s
     item, _, _ = _authorized_audit(id, Authorize, access_token)
     results = _build_audit_results(item)
     results["evidence"] = _evidence_metadata(id)
+    results["questionnaire_reference"] = questionnaire_reference_for_audit(id)
     return results
 
 @audit.get("/audit/{id}")
 async def get_audit(id: str, Authorize: AuthJWT = Depends(), access_token: str = Cookie(None)):
     item, _, _ = _authorized_audit(id, Authorize, access_token)
-    return item.showinfo()
+    return {
+        **item.showinfo(),
+        "questionnaire_reference": questionnaire_reference_for_audit(id),
+    }
 
 
 def _visible_audits(ids, role, username):
