@@ -50,6 +50,13 @@ Opérateurs disponibles : `eq`, `neq`, `lt`, `lte`, `gt`, `gte`, `in`,
 `not_in`, `answered` et `unanswered`. Les branches masquées sont ignorées dans
 la progression, le score, les preuves et l'entretien IA.
 
+## Plan d’action
+
+Depuis le rapport d’un audit, les écarts notés sous 3 peuvent produire des
+propositions chiffrées (priorité, coût, charge, responsable et échéance). Ces
+estimations restent « à valider » jusqu’à une décision humaine tracée. Toute
+modification d’un champ structurant remet automatiquement l’action en revue.
+
 ## Déploiement
 
 ### Vercel
@@ -77,4 +84,3 @@ La CI vérifie à chaque push et Pull Request :
 
 - lint, types et build du frontend ;
 - tests Python et build Docker du backend.
-
