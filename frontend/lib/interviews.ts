@@ -142,3 +142,58 @@ export function interviewErrorMessage(error: unknown) {
   }
   return "L'entretien vidéo n'a pas pu être démarré.";
 }
+
+export type InterviewMonitoring = {
+  generated_at: string;
+  summary: {
+    session_count: number;
+    completed_session_count: number;
+    average_duration_seconds: number | null;
+    coverage_rate: number;
+    covered_questions: number;
+    total_questions: number;
+    human_intervention_count: number;
+    human_intervention_rate: number;
+    response_count: number;
+  };
+  latency: {
+    average_total_ms: number | null;
+    sampled_turns: number;
+    total_turns: number;
+    stages: {
+      key: string;
+      label: string;
+      average_ms: number | null;
+      samples: number;
+    }[];
+  };
+  sessions: {
+    session_id: string;
+    audit_id: string;
+    company_name: string;
+    status: string;
+    created_at: string;
+    updated_at: string;
+    duration_seconds: number | null;
+    turn_count: number;
+    coverage: { covered: number; total: number; rate: number };
+    human_intervention_count: number;
+    average_latency_ms: number | null;
+  }[];
+  interventions: {
+    audit_id: string;
+    session_id: string;
+    company_name: string;
+    question_ref: number;
+    question: string;
+    category: string;
+    summary: string;
+    confidence: number | null;
+    reasons: string[];
+  }[];
+};
+
+export async function getInterviewMonitoring() {
+  const response = await API.get<InterviewMonitoring>('interview-monitoring');
+  return response.data;
+}

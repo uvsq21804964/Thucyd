@@ -1,6 +1,7 @@
 import json
 import secrets
 import time
+from datetime import datetime, timezone
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
@@ -10,9 +11,11 @@ from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
-from app.database import EvidenceModel, SessionLocal, session_scope
+from app.AuditDao.openaudits import OpenAudits
+from app.database import AuditModel, EvidenceModel, SessionLocal, session_scope
 from app.interviews.turn_engine import process_turn
 from app.interviews.models import InterviewSessionModel, InterviewTurnModel
+from app.interviews.monitoring import aggregate_latency, session_coverage, session_duration_seconds
 from app.interviews.tavus import (
     TavusAPIError,
     create_tavus_conversation,
@@ -22,7 +25,7 @@ from app.interviews.tavus import (
 from app.interviews.tokens import create_session_token, extract_session_claims, tavus_context
 from app.oauth2 import AuthJWT
 from app.question_conditions import active_question_refs
-from app.routes.GestionAudit import _authorized_audit
+from app.routes.GestionAudit import ADMIN_ROLES, _authorized_audit, _identity
 from app.settings import settings
 
 router = APIRouter()
@@ -508,6 +511,188 @@ async def _reuse_active_session(
             interview.followups = state
             interview.status = "ended"
     return None
+
+
+@router.get("/interview-monitoring")
+async def interview_monitoring(
+    Authorize: AuthJWT = Depends(),
+    access_token: str = Cookie(None),
+):
+    role, username = _identity(Authorize, access_token)
+    normalized_user = username.casefold()
+    with SessionLocal() as database:
+        audit_rows = database.scalars(select(AuditModel)).all()
+        visible_audits = {
+            audit.id: audit
+            for audit in audit_rows
+            if role in ADMIN_ROLES
+            or normalized_user in {
+                str(auditor).casefold() for auditor in (audit.auditors or [])
+            }
+            or (
+                audit.chef is not None
+                and normalized_user == audit.chef.casefold()
+            )
+        }
+        if not visible_audits:
+            return _empty_monitoring_payload()
+
+        sessions = database.scalars(
+            select(InterviewSessionModel)
+            .where(InterviewSessionModel.audit_id.in_(list(visible_audits)))
+            .order_by(InterviewSessionModel.updated_at.desc())
+        ).all()
+        latest_by_audit: dict[UUID, InterviewSessionModel] = {}
+        for interview in sessions:
+            latest_by_audit.setdefault(interview.audit_id, interview)
+        selected_sessions = list(latest_by_audit.values())
+        session_ids = [interview.id for interview in selected_sessions]
+        turns = (
+            database.scalars(
+                select(InterviewTurnModel)
+                .where(InterviewTurnModel.session_id.in_(session_ids))
+                .order_by(InterviewTurnModel.created_at)
+            ).all()
+            if session_ids
+            else []
+        )
+        turns_by_session: dict[UUID, list[InterviewTurnModel]] = {}
+        for turn in turns:
+            turns_by_session.setdefault(turn.session_id, []).append(turn)
+        evidence_by_audit: dict[UUID, dict[int, list[dict]]] = {}
+        if selected_sessions:
+            evidence_rows = database.execute(
+                select(
+                    EvidenceModel.audit_id,
+                    EvidenceModel.question_ref,
+                    EvidenceModel.filename,
+                    EvidenceModel.status,
+                ).where(
+                    EvidenceModel.audit_id.in_(
+                        [interview.audit_id for interview in selected_sessions]
+                    )
+                )
+            ).all()
+            for audit_id, question_ref, filename, status in evidence_rows:
+                audit_evidence = evidence_by_audit.setdefault(audit_id, {})
+                audit_evidence.setdefault(question_ref, []).append(
+                    {"filename": filename, "status": status}
+                )
+
+        session_rows = []
+        interventions = []
+        covered_total = 0
+        question_total = 0
+        response_total = 0
+        completed_durations = []
+        for interview in selected_sessions:
+            audit_row = visible_audits[interview.audit_id]
+            audit = OpenAudits._domain(audit_row)
+            session_turns = turns_by_session.get(interview.id, [])
+            coverage = session_coverage(interview, audit.fiche)
+            covered_total += int(coverage["covered"])
+            question_total += int(coverage["total"])
+            duration = session_duration_seconds(interview, session_turns)
+            if interview.status == "completed" and duration is not None:
+                completed_durations.append(duration)
+            review = _review_summary(
+                audit.fiche,
+                session_turns,
+                active_question_refs(audit.fiche),
+                evidence_by_audit.get(interview.audit_id),
+            )
+            response_total += review["counts"]["ready"] + review["counts"]["attention"]
+            session_latency = aggregate_latency(session_turns)
+            attention_items = [
+                item for item in review["items"] if item["status"] == "attention"
+            ]
+            for item in attention_items:
+                interventions.append(
+                    {
+                        "audit_id": str(interview.audit_id),
+                        "session_id": str(interview.id),
+                        "company_name": audit.company_name,
+                        "question_ref": item["question_ref"],
+                        "question": item["question"],
+                        "category": item["category"],
+                        "summary": item["summary"],
+                        "confidence": item["confidence"],
+                        "reasons": item["reasons"],
+                    }
+                )
+            session_rows.append(
+                {
+                    "session_id": str(interview.id),
+                    "audit_id": str(interview.audit_id),
+                    "company_name": audit.company_name,
+                    "status": interview.status,
+                    "created_at": interview.created_at,
+                    "updated_at": interview.updated_at,
+                    "duration_seconds": duration,
+                    "turn_count": len(session_turns),
+                    "coverage": coverage,
+                    "human_intervention_count": len(attention_items),
+                    "average_latency_ms": session_latency["average_total_ms"],
+                }
+            )
+
+    interventions.sort(
+        key=lambda item: (
+            len(item["reasons"]),
+            -(item["confidence"] if item["confidence"] is not None else 0),
+        ),
+        reverse=True,
+    )
+    human_count = len(interventions)
+    return {
+        "generated_at": datetime.now(timezone.utc),
+        "summary": {
+            "session_count": len(session_rows),
+            "completed_session_count": len(completed_durations),
+            "average_duration_seconds": (
+                round(sum(completed_durations) / len(completed_durations))
+                if completed_durations
+                else None
+            ),
+            "coverage_rate": (
+                round(covered_total * 100 / question_total, 1)
+                if question_total
+                else 0.0
+            ),
+            "covered_questions": covered_total,
+            "total_questions": question_total,
+            "human_intervention_count": human_count,
+            "human_intervention_rate": (
+                round(human_count * 100 / response_total, 1)
+                if response_total
+                else 0.0
+            ),
+            "response_count": response_total,
+        },
+        "latency": aggregate_latency(turns),
+        "sessions": session_rows,
+        "interventions": interventions[:25],
+    }
+
+
+def _empty_monitoring_payload() -> dict[str, Any]:
+    return {
+        "generated_at": datetime.now(timezone.utc),
+        "summary": {
+            "session_count": 0,
+            "completed_session_count": 0,
+            "average_duration_seconds": None,
+            "coverage_rate": 0.0,
+            "covered_questions": 0,
+            "total_questions": 0,
+            "human_intervention_count": 0,
+            "human_intervention_rate": 0.0,
+            "response_count": 0,
+        },
+        "latency": aggregate_latency([]),
+        "sessions": [],
+        "interventions": [],
+    }
 
 
 @router.post("/interviews/{audit_id}/sessions")

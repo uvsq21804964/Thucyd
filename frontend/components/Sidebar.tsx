@@ -4,6 +4,7 @@ import Image from 'next/image';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import {
+  Activity,
   Archive,
   ClipboardList,
   FilePlus2,
@@ -30,6 +31,7 @@ const mainNavigation = [
   { name: 'Nouvel audit', href: '/create-audit', icon: FilePlus2 },
   { name: 'Audits en cours', href: '/current-audits', icon: ClipboardList },
   { name: 'Audits terminés', href: '/finished-audits', icon: Archive },
+  { name: 'Suivi IA', href: '/interview-monitoring', icon: Activity },
 ];
 
 const roleLabels: Record<UserRole, string> = {

@@ -50,6 +50,13 @@ Opérateurs disponibles : `eq`, `neq`, `lt`, `lte`, `gt`, `gte`, `in`,
 `not_in`, `answered` et `unanswered`. Les branches masquées sont ignorées dans
 la progression, le score, les preuves et l'entretien IA.
 
+## Suivi des entretiens IA
+
+La vue **Suivi IA** agrège la dernière session de chaque audit accessible :
+durée moyenne des entretiens terminés, couverture, réponses à contrôler et
+latence backend par étape. Les temps détaillés sont collectés sur les nouveaux
+tours de parole et stockés avec chaque décision, sans migration de schéma.
+
 ## Plan d’action
 
 Depuis le rapport d’un audit, les écarts notés sous 3 peuvent produire des

@@ -2,6 +2,7 @@ import hashlib
 import json
 import re
 from datetime import datetime, timezone
+from time import perf_counter
 from uuid import UUID
 
 from fastapi import HTTPException
@@ -450,6 +451,7 @@ def _rewind_previous_answer(
 
 
 def process_turn(session_id: UUID, audit_id: UUID, messages: list) -> str:
+    turn_started = perf_counter()
     input_hash = _history_hash(messages)
     transcript = _last_user_text(messages)
     request_dialogue = _recent_dialogue(messages)
@@ -474,6 +476,7 @@ def process_turn(session_id: UUID, audit_id: UUID, messages: list) -> str:
             .limit(4)
         ).all()
 
+    context_loaded_at = perf_counter()
     recent_dialogue = (_stored_dialogue(list(reversed(stored_turns))) + request_dialogue)[-8:]
     if snapshot_status == "completed":
         return CLOSING_TEXT
@@ -537,6 +540,7 @@ def process_turn(session_id: UUID, audit_id: UUID, messages: list) -> str:
     if active_index is None:
         raise HTTPException(status_code=409, detail="La question courante n'est plus active")
     candidates = select_candidates(eligible_questions, active_index, transcript)
+    ai_started = perf_counter()
     ai_decision = make_decision(
         current_question=current_question,
         candidates=candidates,
@@ -544,7 +548,10 @@ def process_turn(session_id: UUID, audit_id: UUID, messages: list) -> str:
         followups_used=int(followups.get(str(current_reference), 0)),
         recent_dialogue=recent_dialogue,
     )
+    ai_finished = perf_counter()
     decision = _validated_decision(ai_decision, current_question, candidates)
+    validation_finished = perf_counter()
+    persistence_started = perf_counter()
 
     with session_scope() as database:
         interview = database.scalar(
@@ -643,6 +650,15 @@ def process_turn(session_id: UUID, audit_id: UUID, messages: list) -> str:
         audit.questionnaire = stored_questions
         interview.followups = state
         interview.updated_at = datetime.now(timezone.utc)
+        timings = {
+            "context_ms": round((context_loaded_at - turn_started) * 1000),
+            "preparation_ms": round((ai_started - context_loaded_at) * 1000),
+            "ai_ms": round((ai_finished - ai_started) * 1000),
+            "validation_ms": round((validation_finished - ai_finished) * 1000),
+        }
+        database.flush()
+        timings["persistence_ms"] = round((perf_counter() - persistence_started) * 1000)
+        timings["total_ms"] = round((perf_counter() - turn_started) * 1000)
         database.add(
             InterviewTurnModel(
                 session_id=session_id,
@@ -656,6 +672,7 @@ def process_turn(session_id: UUID, audit_id: UUID, messages: list) -> str:
                     "reason": decision.reason,
                     "updates": applied_updates,
                     "source": "openai" if ai_decision is not None else "deterministic",
+                    "timings": timings,
                 },
                 input_hash=input_hash,
             )
