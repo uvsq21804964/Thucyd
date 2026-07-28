@@ -1,5 +1,6 @@
 import os
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 os.environ.setdefault("DATABASE_URL", "postgresql+psycopg://test:test@localhost/test")
@@ -24,6 +25,7 @@ from app.interviews.turn_engine import (
     _next_uncovered_index,
     _recent_dialogue,
     _safe_transition,
+    _stored_dialogue,
     _validated_decision,
 )
 from app.routes.interviews import ChatMessage
@@ -42,6 +44,21 @@ def question(reference, text, mark=None, comment="", marking_guide=None):
 
 
 class InterviewDecisionTests(unittest.TestCase):
+    def test_stored_dialogue_restores_previous_turns(self):
+        turns = [
+            SimpleNamespace(
+                transcript="Nous avons une politique.",
+                assistant_text="Comment est-elle validée ?",
+            )
+        ]
+        self.assertEqual(
+            _stored_dialogue(turns),
+            [
+                {"role": "user", "content": "Nous avons une politique."},
+                {"role": "assistant", "content": "Comment est-elle validée ?"},
+            ],
+        )
+
     def test_candidate_selection_finds_related_distant_questions(self):
         questions = [
             question(1, "Le responsable sécurité est-il nommé ?"),

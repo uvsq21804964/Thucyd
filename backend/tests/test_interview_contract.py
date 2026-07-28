@@ -17,6 +17,8 @@ from app.routes.interviews import (
     _latest_capture,
     _opening_greeting,
     _review_summary,
+    _resume_greeting,
+    _session_response,
     _stream_response,
 )
 
@@ -49,6 +51,61 @@ class InterviewContractTests(unittest.TestCase):
         self.assertIn("20 questions", greeting)
         self.assertIn("enregistr", greeting)
         self.assertTrue(greeting.endswith("?"))
+
+    def test_resume_greeting_repeats_the_last_saved_prompt(self):
+        interview = SimpleNamespace(
+            followups={"stage": "interview"},
+            question_refs=[1, 2],
+            current_index=1,
+        )
+        audit = SimpleNamespace(
+            company_name="ACME",
+            fiche=[
+                {"ref": 1, "question": "Première question ?"},
+                {"ref": 2, "question": "Deuxième question ?"},
+            ],
+        )
+        turns = [
+            SimpleNamespace(
+                assistant_text="Pouvez-vous préciser le résultat obtenu ?"
+            )
+        ]
+
+        greeting = _resume_greeting(interview, audit, turns)
+
+        self.assertIn("reprenons exactement", greeting)
+        self.assertTrue(greeting.endswith("résultat obtenu ?"))
+
+    def test_resume_greeting_falls_back_to_current_question(self):
+        interview = SimpleNamespace(
+            followups={"stage": "interview"},
+            question_refs=[1, 2],
+            current_index=1,
+        )
+        audit = SimpleNamespace(
+            company_name="ACME",
+            fiche=[
+                {"ref": 1, "question": "Première question ?"},
+                {"ref": 2, "question": "Deuxième question ?"},
+            ],
+        )
+
+        greeting = _resume_greeting(interview, audit, [])
+
+        self.assertTrue(greeting.endswith("Deuxième question ?"))
+
+    def test_session_response_identifies_a_resumed_session(self):
+        interview = SimpleNamespace(id=uuid4())
+        response = _session_response(
+            interview,
+            uuid4(),
+            "Reprenons.",
+            {"conversation_id": "c-resume"},
+            reused=False,
+            resumed=True,
+        )
+        self.assertTrue(response["resumed"])
+        self.assertFalse(response["reused"])
 
     def test_latest_capture_only_exposes_recent_recorded_elements(self):
         recorded_at = datetime.now(timezone.utc)

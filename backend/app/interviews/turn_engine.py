@@ -122,6 +122,17 @@ def _recent_dialogue(messages: list, limit: int = 8) -> list[dict[str, str]]:
     return dialogue[-limit:]
 
 
+def _stored_dialogue(turns: list[InterviewTurnModel]) -> list[dict[str, str]]:
+    dialogue = []
+    for turn in turns:
+        transcript = _clean_tavus_text(str(turn.transcript or ""))
+        assistant_text = " ".join(str(turn.assistant_text or "").split())
+        if transcript:
+            dialogue.append({"role": "user", "content": transcript[:2000]})
+        if assistant_text:
+            dialogue.append({"role": "assistant", "content": assistant_text[:2000]})
+    return dialogue
+
 def _fallback_decision(current_question: dict) -> InterviewDecision:
     return InterviewDecision(
         action="next_question",
@@ -441,7 +452,7 @@ def _rewind_previous_answer(
 def process_turn(session_id: UUID, audit_id: UUID, messages: list) -> str:
     input_hash = _history_hash(messages)
     transcript = _last_user_text(messages)
-    recent_dialogue = _recent_dialogue(messages)
+    request_dialogue = _recent_dialogue(messages)
 
     with SessionLocal() as database:
         interview_snapshot = database.get(InterviewSessionModel, session_id)
@@ -456,7 +467,14 @@ def process_turn(session_id: UUID, audit_id: UUID, messages: list) -> str:
         followups = dict(interview_snapshot.followups or {})
         stage = str(followups.get("stage") or "interview")
         questions = OpenAudits._normalize_questions(audit_snapshot.questionnaire)
+        stored_turns = database.scalars(
+            select(InterviewTurnModel)
+            .where(InterviewTurnModel.session_id == session_id)
+            .order_by(InterviewTurnModel.created_at.desc())
+            .limit(4)
+        ).all()
 
+    recent_dialogue = (_stored_dialogue(list(reversed(stored_turns))) + request_dialogue)[-8:]
     if snapshot_status == "completed":
         return CLOSING_TEXT
     if not references:

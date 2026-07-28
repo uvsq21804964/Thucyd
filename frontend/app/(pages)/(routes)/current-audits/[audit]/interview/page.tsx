@@ -28,9 +28,12 @@ import {
   createInterviewSession,
   endInterviewSession,
   getInterviewSession,
+  getLatestInterviewSession,
+  interruptInterviewSession,
   InterviewSession,
   InterviewSessionDetails,
   interviewErrorMessage,
+  resumeInterviewSession,
 } from '@/lib/interviews';
 
 type AuditInfo = {
@@ -39,7 +42,14 @@ type AuditInfo = {
   finished: boolean;
 };
 
-type Phase = 'intro' | 'creating' | 'active' | 'ended' | 'error';
+type Phase =
+  | 'checking'
+  | 'intro'
+  | 'resume'
+  | 'creating'
+  | 'active'
+  | 'ended'
+  | 'error';
 
 function captureConfidenceLabel(confidence: number) {
   if (confidence >= 0.8) return 'Fiabilité élevée';
@@ -53,7 +63,7 @@ export default function AIInterviewPage({
   params: { audit: string };
 }) {
   const [audit, setAudit] = useState<AuditInfo | null>(null);
-  const [phase, setPhase] = useState<Phase>('intro');
+  const [phase, setPhase] = useState<Phase>('checking');
   const [session, setSession] = useState<InterviewSession | null>(null);
   const [details, setDetails] = useState<InterviewSessionDetails | null>(null);
   const [error, setError] = useState('');
@@ -69,6 +79,24 @@ export default function AIInterviewPage({
       .catch(() => setError("Les informations de l'audit sont indisponibles."));
   }, [params.audit]);
 
+  useEffect(() => {
+    let cancelled = false;
+    getLatestInterviewSession(params.audit)
+      .then((latest) => {
+        if (cancelled) return;
+        setDetails(latest);
+        if (latest.resumable) setPhase('resume');
+        else if (latest.stage === 'completed' || latest.status === 'completed') {
+          setPhase('ended');
+        } else setPhase('intro');
+      })
+      .catch(() => {
+        if (!cancelled) setPhase('intro');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [params.audit]);
   const checkMediaAccess = async () => {
     if (!navigator.mediaDevices?.getUserMedia) {
       throw new Error(
@@ -103,6 +131,26 @@ export default function AIInterviewPage({
     }
   };
 
+  const resumeExistingInterview = async () => {
+    const resumableSessionId = details?.session_id ?? session?.session_id;
+    if (!resumableSessionId || startInProgressRef.current) return;
+    startInProgressRef.current = true;
+    setError('');
+    setPhase('creating');
+    try {
+      await checkMediaAccess();
+      const resumedSession = await resumeInterviewSession(resumableSessionId);
+      setSession(resumedSession);
+      const refreshed = await getInterviewSession(resumedSession.session_id);
+      setDetails(refreshed);
+      setPhase('active');
+    } catch (requestError) {
+      setError(interviewErrorMessage(requestError));
+      setPhase('resume');
+    } finally {
+      startInProgressRef.current = false;
+    }
+  };
   const finishInterview = useCallback(async () => {
     if (!session) return;
     await endInterviewSession(session.session_id);
@@ -115,6 +163,23 @@ export default function AIInterviewPage({
     setPhase('ended');
   }, [session]);
 
+  const handleInterruption = useCallback(async () => {
+    if (!session) return;
+    const interruptedSessionId = session.session_id;
+    try {
+      await interruptInterviewSession(interruptedSessionId);
+    } catch {
+      // La reprise revérifiera aussi directement l'état de la salle Tavus.
+    }
+    try {
+      const refreshed = await getInterviewSession(interruptedSessionId);
+      setDetails(refreshed);
+    } catch {
+      // Les détails déjà chargés restent suffisants pour proposer une reconnexion.
+    }
+    setError('La connexion a été interrompue. Votre progression est conservée.');
+    setPhase('resume');
+  }, [session]);
   const refreshSessionDetails = useCallback(async () => {
     if (!session) return;
     try {
@@ -207,7 +272,14 @@ export default function AIInterviewPage({
         </Badge>
       </header>
 
-      {(phase === 'intro' || phase === 'error') && (
+      {phase === 'checking' && (
+        <section className="surface-card flex min-h-[420px] flex-col items-center justify-center p-10 text-center">
+          <Loader2 className="h-9 w-9 animate-spin text-violet-600" />
+          <h2 className="mt-5 text-xl font-bold text-slate-950">Recherche d’une session sauvegardée</h2>
+          <p className="mt-2 text-sm text-slate-500">Nous vérifions votre dernière progression avant d’ouvrir la vidéo.</p>
+        </section>
+      )}
+      {(phase === 'intro' || phase === 'resume' || phase === 'error') && (
         <div className="grid gap-6 xl:grid-cols-[minmax(0,1.45fr)_minmax(320px,0.55fr)]">
           <section className="relative min-h-[500px] overflow-hidden rounded-3xl bg-slate-950 p-6 text-white shadow-xl">
             <div className="absolute -right-24 -top-24 h-80 w-80 rounded-full bg-violet-600/25 blur-3xl" />
@@ -229,25 +301,33 @@ export default function AIInterviewPage({
                   <Video className="h-11 w-11 text-violet-300" />
                 </span>
                 <h2 className="mt-7 text-3xl font-bold tracking-tight">
-                  Prêt à commencer l’entretien ?
+                  {phase === 'resume'
+                    ? 'Reprendre l’entretien ?'
+                    : 'Prêt à commencer l’entretien ?'}
                 </h2>
                 <p className="mx-auto mt-3 max-w-lg text-sm leading-6 text-slate-300">
-                  L’avatar suit le questionnaire de cet audit, pose les relances
-                  utiles et complète les questions concernées après chaque prise
-                  de parole.
+                  {phase === 'resume'
+                    ? `Votre progression est sauvegardée : ${answeredQuestions} point${answeredQuestions > 1 ? 's' : ''} couvert${answeredQuestions > 1 ? 's' : ''} sur ${totalQuestions}. La reprise se fera sur la dernière question en cours.`
+                    : 'L’avatar suit le questionnaire de cet audit, pose les relances utiles et complète les questions concernées après chaque prise de parole.'}
                 </p>
                 <Button
                   type="button"
                   size="lg"
-                  onClick={startInterview}
+                  onClick={phase === 'resume' ? resumeExistingInterview : startInterview}
                   className="mt-8 rounded-xl bg-violet-600 px-7 shadow-lg shadow-violet-950/40 hover:bg-violet-500"
                 >
-                  <Mic className="mr-2 h-5 w-5" />
-                  Autoriser et démarrer
+                  {phase === 'resume' ? (
+                    <RefreshCw className="mr-2 h-5 w-5" />
+                  ) : (
+                    <Mic className="mr-2 h-5 w-5" />
+                  )}
+                  {phase === 'resume' ? 'Autoriser et reprendre' : 'Autoriser et démarrer'}
                   <ChevronRight className="ml-2 h-5 w-5" />
                 </Button>
                 <p className="mt-4 text-xs text-slate-500">
-                  La salle Tavus est créée uniquement après votre autorisation.
+                  {phase === 'resume'
+                    ? 'Une nouvelle salle sera créée uniquement si l’ancienne n’est plus disponible.'
+                    : 'La salle Tavus est créée uniquement après votre autorisation.'}
                 </p>
               </div>
             </div>
@@ -255,12 +335,44 @@ export default function AIInterviewPage({
 
           <aside className="surface-card p-6">
             <p className="text-xs font-semibold uppercase tracking-[0.16em] text-violet-700">
-              Avant de commencer
+              {phase === 'resume' ? 'Session retrouvée' : 'Avant de commencer'}
             </p>
             <h2 className="mt-2 text-xl font-bold text-slate-950">
-              Quelques conseils
+              {phase === 'resume' ? 'Progression et historique' : 'Quelques conseils'}
             </h2>
-            <div className="mt-6 space-y-5">
+            {phase === 'resume' && details && (
+              <div className="mt-6 space-y-4">
+                <div className="rounded-xl bg-violet-50 p-4">
+                  <div className="flex items-center justify-between text-xs font-semibold text-violet-800">
+                    <span>{answeredQuestions} / {totalQuestions} points couverts</span>
+                    <span>{completion}%</span>
+                  </div>
+                  <div className="mt-2 h-2 overflow-hidden rounded-full bg-violet-100">
+                    <div className="h-full rounded-full bg-violet-600" style={{ width: `${completion}%` }} />
+                  </div>
+                  {details.last_saved_at && (
+                    <p className="mt-2 text-[11px] text-violet-700">
+                      Dernière sauvegarde : {new Intl.DateTimeFormat('fr-FR', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(details.last_saved_at))}
+                    </p>
+                  )}
+                </div>
+                <details className="rounded-xl border border-slate-200 p-4">
+                  <summary className="cursor-pointer text-sm font-semibold text-slate-800">
+                    Historique sauvegardé ({details.turns.length} tours)
+                  </summary>
+                  <div className="mt-3 max-h-56 space-y-3 overflow-y-auto pr-1">
+                    {details.turns.slice(-3).map((turn) => (
+                      <div key={`${turn.created_at}-${turn.question_ref ?? 'control'}-${turn.transcript.slice(0, 20)}`} className="border-l-2 border-violet-200 pl-3 text-xs leading-5">
+                        <p className="font-medium text-slate-700">Vous : {turn.transcript}</p>
+                        <p className="mt-1 text-slate-500">Auditeur : {turn.assistant_text}</p>
+                      </div>
+                    ))}
+                    {details.turns.length === 0 && <p className="text-xs text-slate-500">L’entretien reprendra à son introduction.</p>}
+                  </div>
+                </details>
+              </div>
+            )}
+            <div className={phase === 'resume' ? 'hidden' : 'mt-6 space-y-5'}>
               {[
                 {
                   icon: Mic,
@@ -294,24 +406,24 @@ export default function AIInterviewPage({
               ))}
             </div>
 
-            {phase === 'error' && (
+            {error && (
               <div
                 role="alert"
                 className="mt-6 rounded-xl border border-red-200 bg-red-50 p-4"
               >
                 <p className="text-sm font-semibold text-red-900">
-                  Démarrage impossible
+                  {phase === 'resume' ? 'Reconnexion impossible' : 'Démarrage impossible'}
                 </p>
                 <p className="mt-1 text-xs leading-5 text-red-700">{error}</p>
                 <Button
                   type="button"
                   size="sm"
                   variant="outline"
-                  onClick={startInterview}
+                  onClick={phase === 'resume' ? resumeExistingInterview : startInterview}
                   className="mt-3 rounded-lg bg-white"
                 >
                   <RefreshCw className="mr-2 h-3.5 w-3.5" />
-                  Réessayer
+                  {phase === 'resume' ? 'Réessayer la reprise' : 'Réessayer'}
                 </Button>
               </div>
             )}
@@ -345,7 +457,8 @@ export default function AIInterviewPage({
               onActivityChange={handleActivityChange}
               onTurnProcessed={refreshSessionDetails}
               onUtterance={handleUtterance}
-              onLeave={finishInterview}
+              onFinish={finishInterview}
+              onInterrupted={handleInterruption}
             />
           </section>
           <aside className="space-y-4" aria-live="polite">
@@ -512,6 +625,22 @@ export default function AIInterviewPage({
                 sont affichés.
               </p>
             </div>
+
+            {details && details.turns.length > 0 && (
+              <details className="surface-card p-5">
+                <summary className="cursor-pointer text-sm font-semibold text-slate-900">
+                  Historique récent · {details.turns.length} tours
+                </summary>
+                <div className="mt-3 max-h-64 space-y-3 overflow-y-auto pr-1">
+                  {details.turns.slice(-3).map((turn) => (
+                    <div key={`${turn.created_at}-${turn.question_ref ?? 'control'}-${turn.transcript.slice(0, 20)}`} className="rounded-xl bg-slate-50 p-3 text-xs leading-5">
+                      <p className="font-medium text-slate-700">Vous : {turn.transcript}</p>
+                      <p className="mt-1 text-slate-500">Auditeur : {turn.assistant_text}</p>
+                    </div>
+                  ))}
+                </div>
+              </details>
+            )}
           </aside>
         </div>
       )}
@@ -550,7 +679,7 @@ export default function AIInterviewPage({
             </div>
             <div className="mt-6 flex flex-wrap justify-center gap-3">
               <Button asChild className="rounded-xl">
-                <Link href={`${reviewUrl}?session=${session?.session_id}`}>
+                <Link href={`${reviewUrl}?session=${session?.session_id ?? details?.session_id}`}>
                   Ouvrir la revue
                 </Link>
               </Button>

@@ -49,4 +49,6 @@ La réponse contient `tavus.conversation_id`, `tavus.conversation_url` et, pour 
 
 La page `/current-audits/<audit_id>/interview` vérifie les autorisations caméra et microphone avant de créer la salle. Elle rejoint ensuite la conversation privée avec Daily, en passant séparément `conversation_url` et `meeting_token`.
 
-À la sortie, le frontend appelle `POST /interviews/<session_id>/end`. Le backend termine la conversation chez Tavus, met son état à `ended` et conserve les réponses déjà enregistrées dans le questionnaire.
+Une interruption ou l'action « Reprendre plus tard » appelle `POST /interviews/<session_id>/interrupt`. La session passe à `interrupted`, mais son index, ses relances et tous ses tours restent en base.
+
+`POST /interviews/<session_id>/resume` reprend le même identifiant de session. Le backend rejoint la salle encore active ou en crée une nouvelle si nécessaire, puis fait répéter exactement la dernière question ou relance enregistrée. Seule l'action « Terminer » appelle `POST /interviews/<session_id>/end` et rend la session non reprenable.

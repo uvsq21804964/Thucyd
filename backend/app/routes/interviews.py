@@ -39,6 +39,43 @@ def _opening_greeting(company_name: str, total_questions: int) -> str:
     )[:500]
 
 
+def _resume_greeting(
+    interview: InterviewSessionModel,
+    audit,
+    turns: list[InterviewTurnModel],
+) -> str:
+    state = dict(interview.followups or {})
+    stage = str(state.get("stage") or "interview")
+    if turns:
+        last_prompt = " ".join(str(turns[-1].assistant_text or "").split())
+        if last_prompt:
+            return f"Rebonjour. Nous reprenons exactement où nous nous étions arrêtés. {last_prompt}"[:500]
+    if stage == "closing":
+        prompt = str(state.get("closing_prompt") or "").strip()
+        if prompt:
+            return f"Rebonjour. Reprenons la conclusion de notre entretien. {prompt}"[:500]
+    references = [int(reference) for reference in interview.question_refs]
+    current_reference = (
+        references[min(interview.current_index, len(references) - 1)]
+        if references
+        else None
+    )
+    current_question = next(
+        (
+            question
+            for question in audit.fiche
+            if current_reference is not None
+            and int(question.get("ref", -1)) == current_reference
+        ),
+        None,
+    )
+    if current_question is not None:
+        return (
+            "Rebonjour. Nous reprenons exactement où nous nous étions arrêtés. "
+            + str(current_question["question"]).strip()
+        )[:500]
+    return _opening_greeting(audit.company_name, len(references))
+
 def _latest_capture(turns: list[InterviewTurnModel]) -> dict[str, Any] | None:
     for turn in reversed(turns):
         decision = turn.decision if isinstance(turn.decision, dict) else {}
@@ -267,6 +304,8 @@ def _session_details(
         "total_questions": len(references),
         "answered_questions": len(covered_refs),
         "stage": state.get("stage", "interview"),
+        "resumable": interview.status in {"active", "interrupted", "interrupting"}
+        and state.get("stage") != "completed",
         "current_question": (
             {
                 "ref": int(current_question["ref"]),
@@ -359,6 +398,7 @@ def _session_response(
     tavus_state: dict[str, Any],
     *,
     reused: bool,
+    resumed: bool = False,
 ):
     return {
         "session_id": str(interview.id),
@@ -366,8 +406,45 @@ def _session_response(
         "status": "active",
         "custom_greeting": custom_greeting,
         "reused": reused,
+        "resumed": resumed,
         "tavus": tavus_state,
     }
+
+
+def _load_turns(database, session_id: UUID) -> list[InterviewTurnModel]:
+    return database.scalars(
+        select(InterviewTurnModel)
+        .where(InterviewTurnModel.session_id == session_id)
+        .order_by(InterviewTurnModel.created_at)
+    ).all()
+
+
+async def _create_resume_conversation(
+    interview: InterviewSessionModel,
+    audit,
+    turns: list[InterviewTurnModel],
+) -> tuple[dict[str, Any], str]:
+    greeting = _resume_greeting(interview, audit, turns)
+    token = create_session_token(interview.id, interview.audit_id)
+    try:
+        tavus = await run_in_threadpool(
+            create_tavus_conversation,
+            conversation_name=f"Reprise audit ORNISEC - {audit.company_name}"[:120],
+            conversational_context=tavus_context(token),
+            custom_greeting=greeting,
+        )
+    except TavusAPIError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    return (
+        {
+            "conversation_id": tavus.conversation_id,
+            "conversation_url": str(tavus.conversation_url),
+            "meeting_token": tavus.meeting_token,
+            "status": tavus.status,
+            "resumed_at": time.time(),
+        },
+        greeting,
+    )
 
 
 async def _reuse_active_session(
@@ -575,6 +652,189 @@ async def get_latest_interview_session(
             _document_evidence_index(database, interview.audit_id),
         )
 
+@router.post("/interviews/{session_id}/resume")
+async def resume_interview_session(
+    session_id: str,
+    Authorize: AuthJWT = Depends(),
+    access_token: str = Cookie(None),
+):
+    try:
+        parsed_session_id = UUID(session_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Identifiant de session invalide") from exc
+
+    with SessionLocal() as database:
+        interview = database.get(InterviewSessionModel, parsed_session_id)
+        if interview is None:
+            raise HTTPException(status_code=404, detail="Session d'entretien introuvable")
+        audit, _, _ = _authorized_audit(str(interview.audit_id), Authorize, access_token)
+        state = dict(interview.followups or {})
+        if interview.status == "interrupting":
+            raise HTTPException(
+                status_code=409,
+                detail="La sauvegarde de l'interruption est en cours. Réessayez dans un instant.",
+            )
+        if interview.status not in {"active", "interrupted"} or state.get("stage") == "completed":
+            raise HTTPException(status_code=409, detail="Cet entretien ne peut plus être repris")
+        turns = _load_turns(database, parsed_session_id)
+        previous_tavus = dict(state.get("tavus") or {})
+        conversation_id = previous_tavus.get("conversation_id")
+
+    provider_status = "ended"
+    if conversation_id:
+        try:
+            provider_status = await run_in_threadpool(
+                get_tavus_conversation_status,
+                conversation_id,
+            )
+        except TavusAPIError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="Impossible de vérifier la salle Tavus avant la reprise.",
+            ) from exc
+
+    greeting = _resume_greeting(interview, audit, turns)
+    if provider_status == "active":
+        tavus_state = {**previous_tavus, "status": "active", "resumed_at": time.time()}
+        reused = True
+    else:
+        with session_scope() as database:
+            locked = database.scalar(
+                select(InterviewSessionModel)
+                .where(InterviewSessionModel.id == parsed_session_id)
+                .with_for_update()
+            )
+            if locked is None:
+                raise HTTPException(status_code=404, detail="Session d'entretien introuvable")
+            if locked.status == "resuming":
+                raise HTTPException(status_code=409, detail="Une reprise est déjà en cours")
+            if locked.status not in {"active", "interrupted"}:
+                raise HTTPException(status_code=409, detail="Cet entretien ne peut plus être repris")
+            locked.status = "resuming"
+        try:
+            tavus_state, greeting = await _create_resume_conversation(interview, audit, turns)
+        except HTTPException:
+            with session_scope() as database:
+                locked = database.get(InterviewSessionModel, parsed_session_id)
+                if locked is not None and locked.status == "resuming":
+                    locked.status = "interrupted"
+            raise
+        reused = False
+
+    with session_scope() as database:
+        stored = database.scalar(
+            select(InterviewSessionModel)
+            .where(InterviewSessionModel.id == parsed_session_id)
+            .with_for_update()
+        )
+        if stored is None:
+            raise HTTPException(status_code=404, detail="Session d'entretien introuvable")
+        if reused and stored.status not in {"active", "interrupted"}:
+            raise HTTPException(status_code=409, detail="L'état de l'entretien a changé")
+        if not reused and stored.status != "resuming":
+            raise HTTPException(status_code=409, detail="La reprise a été interrompue")
+        stored_state = dict(stored.followups or {})
+        if not reused and previous_tavus.get("conversation_id"):
+            history = list(stored_state.get("tavus_history") or [])
+            history.append(previous_tavus)
+            stored_state["tavus_history"] = history[-10:]
+        stored_state["tavus"] = tavus_state
+        stored.followups = stored_state
+        stored.status = "active"
+
+    return _session_response(
+        stored,
+        stored.audit_id,
+        greeting,
+        tavus_state,
+        reused=reused,
+        resumed=True,
+    )
+
+
+@router.post("/interviews/{session_id}/interrupt")
+async def interrupt_interview_session(
+    session_id: str,
+    Authorize: AuthJWT = Depends(),
+    access_token: str = Cookie(None),
+):
+    try:
+        parsed_session_id = UUID(session_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Identifiant de session invalide") from exc
+
+    with SessionLocal() as database:
+        interview = database.get(InterviewSessionModel, parsed_session_id)
+        if interview is None:
+            raise HTTPException(status_code=404, detail="Session d'entretien introuvable")
+        _authorized_audit(str(interview.audit_id), Authorize, access_token)
+        state = dict(interview.followups or {})
+        if interview.status == "resuming":
+            raise HTTPException(status_code=409, detail="La reconnexion est déjà en cours")
+        if interview.status in {"completed", "ended"} or state.get("stage") == "completed":
+            return {"session_id": session_id, "status": interview.status, "resumable": False}
+        tavus_state = dict(state.get("tavus") or {})
+        conversation_id = tavus_state.get("conversation_id")
+
+    with session_scope() as database:
+        stored = database.scalar(
+            select(InterviewSessionModel)
+            .where(InterviewSessionModel.id == parsed_session_id)
+            .with_for_update()
+        )
+        if stored is None:
+            raise HTTPException(status_code=404, detail="Session d'entretien introuvable")
+        stored_state = dict(stored.followups or {})
+        if stored.status == "interrupting":
+            return {
+                "session_id": session_id,
+                "status": "interrupting",
+                "resumable": True,
+                "cleanup_pending": True,
+            }
+        if stored.status in {"completed", "ended"} or stored_state.get("stage") == "completed":
+            return {"session_id": session_id, "status": stored.status, "resumable": False}
+        if stored.status == "resuming":
+            raise HTTPException(status_code=409, detail="La reconnexion est déjà en cours")
+        stored.status = "interrupting"
+    provider_ended = tavus_state.get("status") == "ended"
+    cleanup_error = None
+    if conversation_id and tavus_state.get("status") != "ended":
+        try:
+            await run_in_threadpool(end_tavus_conversation, conversation_id)
+            provider_ended = True
+        except TavusAPIError as exc:
+            cleanup_error = exc.detail
+
+    with session_scope() as database:
+        stored = database.scalar(
+            select(InterviewSessionModel)
+            .where(InterviewSessionModel.id == parsed_session_id)
+            .with_for_update()
+        )
+        if stored is None:
+            raise HTTPException(status_code=404, detail="Session d'entretien introuvable")
+        state = dict(stored.followups or {})
+        if stored.status in {"completed", "ended"} or state.get("stage") == "completed":
+            return {"session_id": session_id, "status": stored.status, "resumable": False}
+        if stored.status == "resuming":
+            raise HTTPException(status_code=409, detail="La reconnexion est déjà en cours")
+        tavus_state = dict(state.get("tavus") or {})
+        tavus_state["status"] = "ended" if provider_ended else "interrupt_pending"
+        tavus_state["interrupted_at"] = time.time()
+        if cleanup_error:
+            tavus_state["cleanup_error"] = cleanup_error
+        state["tavus"] = tavus_state
+        stored.followups = state
+        stored.status = "interrupted"
+
+    return {
+        "session_id": session_id,
+        "status": "interrupted",
+        "resumable": True,
+        "cleanup_pending": bool(cleanup_error),
+    }
+
 @router.post("/interviews/{session_id}/end")
 async def end_interview_session(
     session_id: str,
@@ -591,6 +851,8 @@ async def end_interview_session(
         if interview is None:
             raise HTTPException(status_code=404, detail="Session d'entretien introuvable")
         _authorized_audit(str(interview.audit_id), Authorize, access_token)
+        if interview.status in {"resuming", "interrupting"}:
+            raise HTTPException(status_code=409, detail="Une transition de connexion est déjà en cours")
         tavus_state = dict(interview.followups or {}).get("tavus") or {}
         conversation_id = tavus_state.get("conversation_id")
         already_ended = tavus_state.get("status") == "ended"

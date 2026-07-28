@@ -11,6 +11,7 @@ import {
   Play,
   Radio,
   RotateCcw,
+  Save,
   Undo2,
   VideoOff,
 } from 'lucide-react';
@@ -39,7 +40,8 @@ type TavusCallProps = {
   onActivityChange: (activity: InterviewActivity) => void;
   onTurnProcessed: () => void;
   onUtterance: (utterance: InterviewUtterance) => void;
-  onLeave: () => Promise<void>;
+  onFinish: () => Promise<void>;
+  onInterrupted: () => Promise<void>;
 };
 
 type CallStatus = 'connecting' | 'joined' | 'leaving' | 'error';
@@ -71,11 +73,13 @@ export default function TavusCall({
   onActivityChange,
   onTurnProcessed,
   onUtterance,
-  onLeave,
+  onFinish,
+  onInterrupted,
 }: TavusCallProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const callRef = useRef<DailyCall | null>(null);
   const finishStartedRef = useRef(false);
+  const interruptionStartedRef = useRef(false);
   const lastProcessedTurnRef = useRef<string | null>(null);
   const lastUtteranceRef = useRef<string | null>(null);
   const [status, setStatus] = useState<CallStatus>('connecting');
@@ -93,20 +97,15 @@ export default function TavusCall({
     [onActivityChange]
   );
 
-  const finishInterview = useCallback(async () => {
-    if (finishStartedRef.current) return;
-    finishStartedRef.current = true;
-    setStatus('leaving');
+  const interruptInterview = useCallback(async () => {
+    if (finishStartedRef.current || interruptionStartedRef.current) return;
+    interruptionStartedRef.current = true;
     try {
-      await onLeave();
+      await onInterrupted();
     } catch {
-      setError(
-        "La vidéo est fermée, mais la confirmation de fin n'a pas pu être envoyée."
-      );
-      setStatus('error');
-      updateActivity('error');
+      // L'état persistant sera revérifié lors de la prochaine tentative de reprise.
     }
-  }, [onLeave, updateActivity]);
+  }, [onInterrupted]);
 
   const setPause = useCallback(
     (nextPaused: boolean) => {
@@ -168,7 +167,12 @@ export default function TavusCall({
       }
     };
     const left = () => {
-      if (!disposed) finishInterview().catch(() => undefined);
+      if (!disposed && !finishStartedRef.current) {
+        setError('La connexion vidéo a été interrompue. Votre progression est conservée.');
+        setStatus('error');
+        updateActivity('error');
+        interruptInterview().catch(() => undefined);
+      }
     };
     const callError = () => {
       if (!disposed) {
@@ -177,6 +181,7 @@ export default function TavusCall({
         );
         setStatus('error');
         updateActivity('error');
+        interruptInterview().catch(() => undefined);
       }
     };
     const appMessage = (
@@ -271,11 +276,11 @@ export default function TavusCall({
       } catch {
         if (!disposed) {
           setError(
-            'Impossible de rejoindre la salle vidéo. La conversation va être arrêtée.'
+            'Impossible de rejoindre la salle vidéo. Votre progression reste disponible pour une reprise.'
           );
           setStatus('error');
           updateActivity('error');
-          await finishInterview();
+          await interruptInterview();
         }
       }
     };
@@ -294,11 +299,13 @@ export default function TavusCall({
         call.destroy().catch(() => undefined);
       }
       callRef.current = null;
-      if (wasJoined) finishInterview().catch(() => undefined);
+      if (wasJoined && !finishStartedRef.current) {
+        interruptInterview().catch(() => undefined);
+      }
     };
   }, [
     conversationUrl,
-    finishInterview,
+    interruptInterview,
     meetingToken,
     onTurnProcessed,
     onUtterance,
@@ -306,13 +313,27 @@ export default function TavusCall({
     updateActivity,
   ]);
 
-  const leave = async () => {
-    if (status === 'leaving') return;
+  const leaveForLater = async () => {
+    if (status === 'leaving' || finishStartedRef.current) return;
     setStatus('leaving');
     try {
       await callRef.current?.leave();
     } finally {
-      await finishInterview();
+      await interruptInterview();
+    }
+  };
+
+  const leave = async () => {
+    if (status === 'leaving' || finishStartedRef.current) return;
+    finishStartedRef.current = true;
+    setStatus('leaving');
+    try {
+      await callRef.current?.leave();
+      await onFinish();
+    } catch {
+      setError("La fin de l'entretien n'a pas pu être confirmée.");
+      setStatus('error');
+      updateActivity('error');
     }
   };
 
@@ -452,10 +473,20 @@ export default function TavusCall({
         <Button
           type="button"
           size="sm"
+          variant="secondary"
+          disabled={status !== 'joined'}
+          onClick={leaveForLater}
+          className="ml-auto rounded-lg"
+        >
+          <Save className="mr-1.5 h-4 w-4" /> Reprendre plus tard
+        </Button>
+        <Button
+          type="button"
+          size="sm"
           variant="destructive"
           disabled={status !== 'joined'}
           onClick={() => setConfirmLeave(true)}
-          className="ml-auto rounded-lg"
+          className="rounded-lg"
         >
           <LogOut className="mr-1.5 h-4 w-4" /> Terminer
         </Button>

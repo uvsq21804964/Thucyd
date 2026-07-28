@@ -13,6 +13,7 @@ export type InterviewSession = {
   status: string;
   custom_greeting: string;
   reused?: boolean;
+  resumed?: boolean;
   tavus: TavusRoom;
 };
 
@@ -58,6 +59,7 @@ export type InterviewSessionDetails = {
   total_questions: number;
   answered_questions: number;
   stage: 'introduction' | 'interview' | 'closing' | 'completed';
+  resumable: boolean;
   current_question: {
     ref: number;
     category: string;
@@ -85,6 +87,23 @@ export async function createInterviewSession(auditId: string) {
   const response = await API.post<InterviewSession>(
     `interviews/${auditId}/sessions`
   );
+  return response.data;
+}
+
+export async function resumeInterviewSession(sessionId: string) {
+  const response = await API.post<InterviewSession>(
+    `interviews/${sessionId}/resume`
+  );
+  return response.data;
+}
+
+export async function interruptInterviewSession(sessionId: string) {
+  const response = await API.post<{
+    session_id: string;
+    status: string;
+    resumable: boolean;
+    cleanup_pending: boolean;
+  }>(`interviews/${sessionId}/interrupt`);
   return response.data;
 }
 
