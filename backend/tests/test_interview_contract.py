@@ -14,6 +14,8 @@ os.environ.setdefault("INITIAL_ADMIN_PASSWORD", "test-admin-password")
 from app.interviews.tokens import create_session_token, extract_session_claims, tavus_context
 from app.routes.interviews import (
     ChatMessage,
+    TAVUS_CONNECTIVITY_CHECK_PROMPT,
+    _is_tavus_connectivity_check,
     _latest_capture,
     _opening_greeting,
     _review_summary,
@@ -24,6 +26,24 @@ from app.routes.interviews import (
 
 
 class InterviewContractTests(unittest.TestCase):
+    def test_tavus_connectivity_check_is_accepted_without_session_context(self):
+        messages = [
+            ChatMessage(role="system", content="You are a helpful assistant."),
+            ChatMessage(role="user", content=TAVUS_CONNECTIVITY_CHECK_PROMPT),
+        ]
+
+        self.assertTrue(_is_tavus_connectivity_check(messages))
+
+    def test_regular_message_is_not_treated_as_connectivity_check(self):
+        messages = [
+            ChatMessage(
+                role="user",
+                content="Custom LLM configuration test successful.",
+            )
+        ]
+
+        self.assertFalse(_is_tavus_connectivity_check(messages))
+
     def test_signed_context_round_trip(self):
         session_id = uuid4()
         audit_id = uuid4()

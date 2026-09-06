@@ -7,3 +7,23 @@ services:
     ports:
       - "8080:8000"
     restart: unless-stopped
+
+  ngrok:
+    image: ngrok/ngrok:latest
+    profiles:
+      - tunnel
+    command:
+      - http
+      - backend:8000
+      - --config
+      - /etc/ngrok.yml
+    volumes:
+      - type: bind
+        source: ${LOCALAPPDATA}/ngrok/ngrok.yml
+        target: /etc/ngrok.yml
+        read_only: true
+    depends_on:
+      - backend
+    ports:
+      - "4040:4040"
+    restart: unless-stopped

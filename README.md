@@ -37,6 +37,49 @@ npm run dev
 L'interface est disponible sur `http://localhost:3000` et l'API sur
 `http://localhost:8080`.
 
+### Exposer le backend local a Tavus avec ngrok
+
+Apres avoir lance le backend sur le port `8080`, ouvrez un second terminal
+PowerShell et demarrez le tunnel :
+
+```powershell
+ngrok http 8080
+```
+
+Au premier usage, associez auparavant le CLI a votre compte avec l'authtoken
+fourni sur <https://dashboard.ngrok.com/get-started/your-authtoken> :
+
+```powershell
+ngrok config add-authtoken VOTRE_AUTHTOKEN_NGROK
+```
+
+Copiez l'URL HTTPS affichee par ngrok (par exemple
+`https://abc123.ngrok-free.app`). Dans la configuration **Custom LLM** de
+Tavus, utilisez :
+
+```text
+Base URL: https://abc123.ngrok-free.app/v1
+Model: ornisec-interviewer
+API Key: la valeur de TAVUS_LLM_API_KEY
+```
+
+Laissez le backend et ngrok actifs pendant tout l'entretien. Avec une URL
+ngrok gratuite non reservee, mettez a jour la Base URL dans Tavus apres chaque
+redemarrage du tunnel.
+
+Si Windows Defender bloque l'executable ngrok local, utilisez le service Docker
+integre. Il reutilise en lecture seule l'authtoken deja enregistre dans
+`%LOCALAPPDATA%\ngrok\ngrok.yml` :
+
+```powershell
+cd backend
+docker compose --profile tunnel up --build
+```
+
+Le service ngrok transmet alors le trafic vers `backend:8000`. L'URL publique
+est visible sur <http://localhost:4040> et la Base URL Tavus reste l'URL HTTPS
+affichee suivie de `/v1`.
+
 ## Questionnaires conditionnels
 
 Ajoutez `display_if` à une question pour ne l'afficher que selon la note d'une

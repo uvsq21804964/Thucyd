@@ -362,6 +362,23 @@ class ChatCompletionRequest(BaseModel):
     stream: bool = True
 
 
+TAVUS_CONNECTIVITY_CHECK_PROMPT = (
+    "This is an automated connectivity check sent during custom LLM configuration. "
+    "Confirm your streaming chat completions endpoint is working by responding with "
+    "exactly: 'Custom LLM configuration test successful.'"
+)
+TAVUS_CONNECTIVITY_CHECK_RESPONSE = "Custom LLM configuration test successful."
+
+
+def _is_tavus_connectivity_check(messages: list[ChatMessage]) -> bool:
+    user_messages = [
+        message.text_content().strip()
+        for message in messages
+        if message.role == "user"
+    ]
+    return user_messages == [TAVUS_CONNECTIVITY_CHECK_PROMPT]
+
+
 def _authenticate_tavus(authorization: str | None):
     expected = settings.TAVUS_LLM_API_KEY
     if not expected:
@@ -1084,8 +1101,16 @@ async def tavus_chat_completions(
     authorization: str | None = Header(default=None),
 ):
     _authenticate_tavus(authorization)
-    session_id, audit_id = extract_session_claims(payload.messages)
-    assistant_text = await run_in_threadpool(process_turn, session_id, audit_id, payload.messages)
+    if _is_tavus_connectivity_check(payload.messages):
+        assistant_text = TAVUS_CONNECTIVITY_CHECK_RESPONSE
+    else:
+        session_id, audit_id = extract_session_claims(payload.messages)
+        assistant_text = await run_in_threadpool(
+            process_turn,
+            session_id,
+            audit_id,
+            payload.messages,
+        )
 
     if payload.stream:
         return StreamingResponse(
